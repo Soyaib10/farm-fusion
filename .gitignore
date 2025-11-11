@@ -1,0 +1,190 @@
+#Readme
+README.md
+*.txt
+*.json
+
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Binary outputs
+/bin/
+/dist/
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Configuration files with sensitive data
+config.yaml
+config.yml
+config.json
+secrets/
+
+# Log files
+*.log
+logs/
+
+# Coverage files
+coverage.txt
+coverage.out
+*.cover
+htmlcov/
+
+# Build cache
+/.cache/
+/go-build/
+
+# Test cache
+/.test/
+
+# Module download cache
+/go/pkg/mod/
+
+# Local development database
+*.db
+*.sqlite
+*.sqlite3
+
+# Migration files (if you want to ignore specific ones)
+# !migrations/*.sql
+
+# Temporary files
+tmp/
+temp/
+
+# Profiling output
+*.pprof
+*.prof
+
+# gopls directory
+.gopls/
+
+# Delve debugger
+debug
+
+# Local development certificates
+*.key
+*.pem
+*.crt
+
+# Backup files
+backup/
+*.bak
+        
+# Python ML service (if you have one)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# celery beat schedule file
+celerybeat-schedule
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Editor directories and files
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
