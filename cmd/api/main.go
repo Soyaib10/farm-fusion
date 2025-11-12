@@ -6,8 +6,10 @@ import (
 
 	"github.com/Soyaib10/farm-fusion/internal/config"
 	httpDelivery "github.com/Soyaib10/farm-fusion/internal/delivery/http"
+	farmHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/farm"
 	userHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/user"
 	"github.com/Soyaib10/farm-fusion/internal/infra/postgres"
+	farmUsecase "github.com/Soyaib10/farm-fusion/internal/usecase/farm"
 	userUsecase "github.com/Soyaib10/farm-fusion/internal/usecase/user"
 )
 
@@ -21,16 +23,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
-	defer db.Close() 
+	defer db.Close()
 	log.Println("Database connection successful")
 
 	userRepo := postgres.NewUserRepositoryPG(db)
-	usecase := userUsecase.NewUseCase(userRepo)
+	userUsecase := userUsecase.NewUseCase(userRepo)
+
+	farmRepo := postgres.NewFarmRepositoryPG(db)
+	farmUsecase := farmUsecase.NewUseCase(farmRepo)
+
 	handlers := &httpDelivery.Handlers{
-		User: userHandler.NewHandler(usecase),
+		User: userHandler.NewHandler(userUsecase),
+		Farm: farmHandler.NewHandler(farmUsecase),
 	}
 	router := httpDelivery.NewHandlers(handlers)
-	log.Println("HTTP router initialized")
 
 	port := ":" + cfg.ServerPort
 	log.Printf("Server starting on port %s", port)

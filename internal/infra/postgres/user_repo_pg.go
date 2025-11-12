@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Soyaib10/farm-fusion/internal/usecase/user"
 	"github.com/Soyaib10/farm-fusion/internal/domain"
+	"github.com/Soyaib10/farm-fusion/internal/usecase/user"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -28,15 +29,15 @@ func (r *UserRepositoryPG) Create(user *domain.User) error {
 	return nil
 }
 
-func (r *UserRepositoryPG) GetByID(id string) (*domain.User, error) {
-    query := "SELECT id, name, email, created_at FROM users WHERE id = $1"
-    row := r.db.QueryRow(context.Background(), query, id)
+func (r *UserRepositoryPG) GetByID(id uuid.UUID) (*domain.User, error) {
+	query := "SELECT id, name, email, created_at FROM users WHERE id = $1"
+	row := r.db.QueryRow(context.Background(), query, id)
 
-    var user domain.User
-    err := row.Scan(&user.ID, &user.Name, &user.Email, &user.CreatedAt)
-    if err != nil {
-        return nil, fmt.Errorf("failed to get user by id: %w", err)
-    }
+	var user domain.User
+	err := row.Scan(&user.ID, &user.Name, &user.Email, &user.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user by id: %w", err)
+	}
 
-    return &user, nil
+	return &user, nil
 }

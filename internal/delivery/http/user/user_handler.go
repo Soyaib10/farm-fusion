@@ -6,6 +6,7 @@ import (
 
 	"github.com/Soyaib10/farm-fusion/internal/usecase/user"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 type Handler struct {
@@ -34,8 +35,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := CreateUserResponse{
-		ID: user.ID,
-		Name: user.Name,
+		ID:    user.ID.String(),
+		Name:  user.Name,
 		Email: user.Email,
 	}
 
@@ -44,7 +45,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		http.Error(w, "invalid user ID", http.StatusBadRequest)
+		return
+	}
+
 	user, err := h.usecase.GetByID(id)
 	if err != nil {
 		http.Error(w, "user not found", http.StatusNotFound)
@@ -52,7 +59,7 @@ func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := CreateUserResponse{
-		ID:    user.ID,
+		ID:    user.ID.String(),
 		Name:  user.Name,
 		Email: user.Email,
 	}

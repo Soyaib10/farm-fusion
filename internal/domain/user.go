@@ -4,17 +4,23 @@ import (
 	"errors"
 	"regexp"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type User struct {
-	ID        string
+	ID        uuid.UUID
 	Name      string
 	Email     string
 	CreatedAt time.Time
 }
 
 func (u *User) Validate() error {
-	if u.ID == "" {
+	if u.ID == uuid.Nil {
+		return errors.New("ID is required")
+	}
+
+	if u.Name == "" {
 		return errors.New("name is required")
 	}
 

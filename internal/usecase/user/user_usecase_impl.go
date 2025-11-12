@@ -5,6 +5,7 @@ import (
 
 	"github.com/Soyaib10/farm-fusion/internal/domain"
 	"github.com/Soyaib10/farm-fusion/pkg/helpers"
+	"github.com/google/uuid"
 )
 
 type useCase struct {
@@ -26,16 +27,16 @@ func (uc *useCase) Create(name, email string) (*domain.User, error) {
 	}
 
 	// validate using domain rules
-	if err := user.Validate(); err != nil  {
+	if err := user.Validate(); err != nil {
 		return nil, err
 	}
-    
-	if err := uc.repository.Create(user); err !=  nil {
+
+	if err := uc.repository.Create(user); err != nil {
 		return nil, err
 	}
-	return user, nil							
+	return user, nil
 }
 
-func (uc *useCase) GetByID(id string) (*domain.User, error) {
+func (uc *useCase) GetByID(id uuid.UUID) (*domain.User, error) {
 	return uc.repository.GetByID(id)
 }
