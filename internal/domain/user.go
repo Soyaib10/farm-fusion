@@ -8,31 +8,30 @@ import (
 	"github.com/google/uuid"
 )
 
+var emailRegex = regexp.MustCompile(`^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$`)
+
 type User struct {
-	ID        uuid.UUID
-	Name      string
-	Email     string
-	CreatedAt time.Time
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	Email     string    `json:"email"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
-func (u *User) Validate() error {
-	if u.ID == uuid.Nil {
-		return errors.New("ID is required")
+func ValidateUser(u *User) error {
+	if u == nil {
+		return errors.New("user cannot be nil")
 	}
-
+	if u.ID == uuid.Nil {
+		return errors.New("id is required")
+	}
 	if u.Name == "" {
 		return errors.New("name is required")
 	}
-
 	if u.Email == "" {
 		return errors.New("email is required")
 	}
-
-	// simple email regex check
-	re := regexp.MustCompile(`^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$`)
-	if !re.MatchString(u.Email) {
+	if !emailRegex.MatchString(u.Email) {
 		return errors.New("invalid email format")
 	}
-
 	return nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 
@@ -19,7 +20,7 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	db, err := postgres.ConnectDB(cfg.DatabaseURL)
+	db, err := postgres.ConnectDB(context.Background(), cfg)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
@@ -27,7 +28,7 @@ func main() {
 	log.Println("Database connection successful")
 
 	userRepo := postgres.NewUserRepositoryPG(db)
-	userUsecase := userUsecase.NewUseCase(userRepo)
+	userUsecase := userUsecase.New(userRepo)
 
 	farmRepo := postgres.NewFarmRepositoryPG(db)
 	farmUsecase := farmUsecase.NewUseCase(farmRepo)

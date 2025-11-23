@@ -1,35 +1,29 @@
+// internal/delivery/http/user/user_dto.go
 package user
 
-type CreateUserRequest struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
+import (
+	"time"
+
+	"github.com/Soyaib10/farm-fusion/internal/domain"
+)
+
+type UpsertUserJSON struct {
+	Name  *string `json:"name,omitempty"  validate:"omitempty,min=1"`
+	Email *string `json:"email,omitempty" validate:"omitempty,email"`
 }
 
-type CreateUserResponse struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
+type UserResponse struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
+	CreatedAt string `json:"created_at"`
 }
 
-type GetUserResponse struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
-
-type UpdateUserRequest struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
-
-type UpdateUserResponse struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
-
-type FindUserResponse struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
+func toUserResponse(u *domain.User) UserResponse {
+	return UserResponse{
+		ID:        u.ID.String(),
+		Name:      u.Name,
+		Email:     u.Email,
+		CreatedAt: u.CreatedAt.Format(time.RFC3339),
+	}
 }

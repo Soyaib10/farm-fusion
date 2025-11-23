@@ -2,70 +2,76 @@ package user
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Soyaib10/farm-fusion/internal/domain"
-	"github.com/Soyaib10/farm-fusion/pkg/helpers"
 	"github.com/google/uuid"
 )
 
 type useCase struct {
-	repository Repository
+	repo Repository
 }
 
-func NewUseCase(repository Repository) UseCase {
-	return &useCase{
-		repository: repository,
+func New(repo Repository) UseCase {
+	return &useCase{repo: repo}
+}
+
+func (uc *useCase) Create(ctx context.Context, cmd UpsertUserCommand) (*domain.User, error) {
+	if cmd.Name == nil || cmd.Email == nil {
+		return nil, errors.New("name and email are required")
 	}
-}
 
-func (uc *useCase) Create(ctx context.Context, name, email string) (*domain.User, error) {
 	user := &domain.User{
-		ID:        helpers.GenerateID(),
-		Name:      name,
-		Email:     email,
-		CreatedAt: time.Now(),
+		ID:        uuid.New(),
+		Name:      *cmd.Name,
+		Email:     *cmd.Email,
+		CreatedAt: time.Now().UTC(),
 	}
 
-	// validate using domain rules
-	if err := user.Validate(); err != nil {
+	if err := domain.ValidateUser(user); err != nil {
 		return nil, err
 	}
 
-	if err := uc.repository.Create(ctx, user); err != nil {
+	if err := uc.repo.Create(ctx, user); err != nil {
 		return nil, err
 	}
+
 	return user, nil
 }
 
-func (uc *useCase) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
-	return uc.repository.GetByID(ctx, id)
-}
-
-func (uc *useCase) Update(ctx context.Context, id uuid.UUID, name, email string) (*domain.User, error) {
-	user, err := uc.repository.GetByID(ctx, id)
+func (uc *useCase) Update(ctx context.Context, id uuid.UUID, cmd UpsertUserCommand) (*domain.User, error) {
+	user, err := uc.repo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	user.Name = name
-	user.Email = email
+	if cmd.Name != nil {
+		user.Name = *cmd.Name
+	}
+	if cmd.Email != nil {
+		user.Email = *cmd.Email
+	}
 
-	if err := user.Validate(); err != nil {
+	if err := domain.ValidateUser(user); err != nil {
 		return nil, err
 	}
 
-	if err := uc.repository.Update(ctx, user); err != nil {
+	if err := uc.repo.Update(ctx, user); err != nil {
 		return nil, err
 	}
 
 	return user, nil
 }
 
-func (uc *useCase) Delete(ctx context.Context, id uuid.UUID) error {
-	return uc.repository.Delete(ctx, id)
+func (uc *useCase) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
+	return uc.repo.GetByID(ctx, id)
 }
 
-func (uc *useCase) Find(ctx context.Context) ([]domain.User, error) {
-	return uc.repository.Find(ctx)
+func (uc *useCase) Delete(ctx context.Context, id uuid.UUID) error {
+	return uc.repo.Delete(ctx, id)
+}
+
+func (uc *useCase) List(ctx context.Context) ([]*domain.User, error) {
+	return uc.repo.List(ctx)
 }

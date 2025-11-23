@@ -20,26 +20,25 @@ func NewHandler(usecase user.UseCase) *Handler {
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	var req CreateUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request payload", http.StatusBadRequest)
+	var input UpsertUserJSON
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
 
-	// use validation logic here
+	cmd := user.UpsertUserCommand{
+		Name:  input.Name,
+		Email: input.Email,
+	}
 
-	user, err := h.usecase.Create(r.Context(), req.Name, req.Email)
+	created, err := h.usecase.Create(r.Context(), cmd)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	resp := CreateUserResponse{
-		ID:    user.ID.String(),
-		Name:  user.Name,
-		Email: user.Email,
-	}
-
+	resp := toUserResponse(created)
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(resp)
 }
@@ -58,7 +57,7 @@ func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := GetUserResponse{
+	resp := UserResponse{
 		ID:    user.ID.String(),
 		Name:  user.Name,
 		Email: user.Email,
@@ -71,28 +70,29 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		http.Error(w, "invalid user ID", http.StatusBadRequest)
+		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
 
-	var req UpdateUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request payload", http.StatusBadRequest)
+	var input UpsertUserJSON
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
 
-	user, err := h.usecase.Update(r.Context(), id, req.Name, req.Email)
+	cmd := user.UpsertUserCommand{
+		Name:  input.Name,
+		Email: input.Email,
+	}
+
+	updated, err := h.usecase.Update(r.Context(), id, cmd)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	resp := UpdateUserResponse{
-		ID:    user.ID.String(),
-		Name:  user.Name,
-		Email: user.Email,
-	}
-
+	resp := toUserResponse(updated)
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
 
@@ -112,21 +112,18 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) Find(w http.ResponseWriter, r *http.Request) {
-	users, err := h.usecase.Find(r.Context())
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	users, err := h.usecase.List(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to list users", http.StatusInternalServerError)
 		return
 	}
 
-	var resp []FindUserResponse
-	for _, user := range users {
-		resp = append(resp, FindUserResponse{
-			ID:    user.ID.String(),
-			Name:  user.Name,
-			Email: user.Email,
-		})
+	resp := make([]UserResponse, len(users))
+	for i, u := range users {
+		resp[i] = toUserResponse(u)
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }

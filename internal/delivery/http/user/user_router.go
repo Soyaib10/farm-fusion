@@ -7,7 +7,7 @@ func RegisterRoutes(r chi.Router, h *Handler) {
 	r.Get("/{id}", h.GetByID)
 	r.Put("/{id}", h.Update)
 	r.Delete("/{id}", h.Delete)
-	r.Get("/", h.Find)
+	r.Get("/", h.List)
 }
 
 

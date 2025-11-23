@@ -6,7 +6,6 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// If User were user (lowercase) in the Handlers struct definition, the line User: userHandler, in main.go would result in a compile-time error because user would be an unexported field and inaccessible from main.go
 type Handlers struct {
 	User *user.Handler
 	Farm *farm.Handler
