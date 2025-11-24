@@ -6,10 +6,11 @@ import (
 	"time"
 
 	"github.com/Soyaib10/farm-fusion/internal/config"
+	"github.com/Soyaib10/farm-fusion/pkg/logger"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func ConnectDB(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
+func ConnectDB(ctx context.Context, cfg *config.Config, logger *logger.Logger) (*pgxpool.Pool, error) {
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("database URL cannot be empty")
 	}
@@ -39,6 +40,6 @@ func ConnectDB(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("database ping failed: %w", err)
 	}
 
-	fmt.Println("Successfully connected to PostgreSQL")
+	logger.PrintInfo("Successfully connected to PostgreSQL", nil)
 	return pool, nil
 }

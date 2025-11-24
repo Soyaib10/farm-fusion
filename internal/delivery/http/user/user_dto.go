@@ -1,4 +1,3 @@
-// internal/delivery/http/user/user_dto.go
 package user
 
 import (

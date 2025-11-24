@@ -1,28 +1,32 @@
 package user
 
 import (
-	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 
+	"github.com/Soyaib10/farm-fusion/internal/app"
+	"github.com/Soyaib10/farm-fusion/internal/domain"
 	"github.com/Soyaib10/farm-fusion/internal/usecase/user"
-	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
+	"github.com/Soyaib10/farm-fusion/internal/validator"
 )
 
 type Handler struct {
+	app     *app.Application
 	usecase user.UseCase
 }
 
-func NewHandler(usecase user.UseCase) *Handler {
+func NewHandler(app *app.Application, usecase user.UseCase) *Handler {
 	return &Handler{
+		app:     app,
 		usecase: usecase,
 	}
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	var input UpsertUserJSON
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
+	if err := h.app.ReadJSON(w, r, &input); err != nil {
+		h.app.BadRequestResponse(w, r, err)
 		return
 	}
 
@@ -33,50 +37,57 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 	created, err := h.usecase.Create(r.Context(), cmd)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		if validationErrors, ok := err.(validator.ValidationError); ok {
+			h.app.FailedValidationResponse(w, r, validationErrors)
+			return
+		}
+		h.app.ServerErrorResponse(w, r, err)
 		return
 	}
 
-	resp := toUserResponse(created)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
+	headers := make(http.Header)
+	headers.Set("Location", fmt.Sprintf("/v1/users/%s", created.ID))
+
+	err = h.app.WriteJSON(w, http.StatusCreated, app.Envelope{"user": created}, headers)
+	if err != nil {
+		h.app.ServerErrorResponse(w, r, err)
+	}
 }
 
 func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
-	idStr := chi.URLParam(r, "id")
-	id, err := uuid.Parse(idStr)
+	id, err := h.app.ReadIDParam(r)
 	if err != nil {
-		http.Error(w, "invalid user ID", http.StatusBadRequest)
+		h.app.NotFoundResponse(w, r)
 		return
 	}
 
 	user, err := h.usecase.GetByID(r.Context(), id)
 	if err != nil {
-		http.Error(w, "user not found", http.StatusNotFound)
+		switch {
+		case errors.Is(err, domain.ErrNotFound):
+			h.app.NotFoundResponse(w, r)
+		default:
+			h.app.ServerErrorResponse(w, r, err)
+		}
 		return
 	}
 
-	resp := UserResponse{
-		ID:    user.ID.String(),
-		Name:  user.Name,
-		Email: user.Email,
+	err = h.app.WriteJSON(w, http.StatusOK, app.Envelope{"user": user}, nil)
+	if err != nil {
+		h.app.ServerErrorResponse(w, r, err)
 	}
-
-	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
-	idStr := chi.URLParam(r, "id")
-	id, err := uuid.Parse(idStr)
+	id, err := h.app.ReadIDParam(r)
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		h.app.NotFoundResponse(w, r)
 		return
 	}
 
 	var input UpsertUserJSON
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
+	if err := h.app.ReadJSON(w, r, &input); err != nil {
+		h.app.BadRequestResponse(w, r, err)
 		return
 	}
 
@@ -87,43 +98,58 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := h.usecase.Update(r.Context(), id, cmd)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		if validationErrors, ok := err.(validator.ValidationError); ok {
+			h.app.FailedValidationResponse(w, r, validationErrors)
+			return
+		}
+		switch {
+		case errors.Is(err, domain.ErrNotFound):
+			h.app.NotFoundResponse(w, r)
+		default:
+			h.app.ServerErrorResponse(w, r, err)
+		}
 		return
 	}
 
-	resp := toUserResponse(updated)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	err = h.app.WriteJSON(w, http.StatusOK, app.Envelope{"user": updated}, nil)
+	if err != nil {
+		h.app.ServerErrorResponse(w, r, err)
+	}
 }
 
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
-	idStr := chi.URLParam(r, "id")
-	id, err := uuid.Parse(idStr)
+	id, err := h.app.ReadIDParam(r)
 	if err != nil {
-		http.Error(w, "invalid user ID", http.StatusBadRequest)
+		h.app.NotFoundResponse(w, r)
 		return
 	}
 
-	if err := h.usecase.Delete(r.Context(), id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	err = h.usecase.Delete(r.Context(), id)
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrNotFound):
+			h.app.NotFoundResponse(w, r)
+		default:
+			h.app.ServerErrorResponse(w, r, err)
+		}
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	err = h.app.WriteJSON(w, http.StatusOK, app.Envelope{"message": "user successfully deleted"}, nil)
+	if err != nil {
+		h.app.ServerErrorResponse(w, r, err)
+	}
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	users, err := h.usecase.List(r.Context())
 	if err != nil {
-		http.Error(w, "failed to list users", http.StatusInternalServerError)
+		h.app.ServerErrorResponse(w, r, err)
 		return
 	}
 
-	resp := make([]UserResponse, len(users))
-	for i, u := range users {
-		resp[i] = toUserResponse(u)
+	err = h.app.WriteJSON(w, http.StatusOK, app.Envelope{"users": users}, nil)
+	if err != nil {
+		h.app.ServerErrorResponse(w, r, err)
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
 }

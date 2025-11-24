@@ -4,14 +4,15 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 
+	"github.com/Soyaib10/farm-fusion/internal/app"
 	"github.com/Soyaib10/farm-fusion/internal/config"
 	httpDelivery "github.com/Soyaib10/farm-fusion/internal/delivery/http"
-	farmHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/farm"
 	userHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/user"
 	"github.com/Soyaib10/farm-fusion/internal/infra/postgres"
-	farmUsecase "github.com/Soyaib10/farm-fusion/internal/usecase/farm"
 	userUsecase "github.com/Soyaib10/farm-fusion/internal/usecase/user"
+	"github.com/Soyaib10/farm-fusion/pkg/logger"
 )
 
 func main() {
@@ -20,28 +21,27 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	db, err := postgres.ConnectDB(context.Background(), cfg)
+	logger := logger.New(os.Stdout, logger.LevelInfo)
+
+	db, err := postgres.ConnectDB(context.Background(), cfg, logger)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
 	defer db.Close()
-	log.Println("Database connection successful")
+
+	application := app.New(cfg, logger, db)
 
 	userRepo := postgres.NewUserRepositoryPG(db)
 	userUsecase := userUsecase.New(userRepo)
 
-	farmRepo := postgres.NewFarmRepositoryPG(db)
-	farmUsecase := farmUsecase.NewUseCase(farmRepo)
-
 	handlers := &httpDelivery.Handlers{
-		User: userHandler.NewHandler(userUsecase),
-		Farm: farmHandler.NewHandler(farmUsecase),
+		User: userHandler.NewHandler(application, userUsecase),
 	}
 	router := httpDelivery.NewHandlers(handlers)
 
 	port := ":" + cfg.ServerPort
-	log.Printf("Server starting on port %s", port)
+	logger.PrintInfo("Server starting", map[string]string{"port": port})
 	if err := http.ListenAndServe(port, router); err != nil {
-		log.Fatalf("Server failed to start: %v", err)
+		logger.PrintFatal(err, map[string]string{"error": "server failed to start"})
 	}
 }

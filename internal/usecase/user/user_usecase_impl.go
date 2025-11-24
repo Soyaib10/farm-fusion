@@ -2,10 +2,10 @@ package user
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/Soyaib10/farm-fusion/internal/domain"
+	"github.com/Soyaib10/farm-fusion/internal/validator"
 	"github.com/google/uuid"
 )
 
@@ -18,8 +18,15 @@ func New(repo Repository) UseCase {
 }
 
 func (uc *useCase) Create(ctx context.Context, cmd UpsertUserCommand) (*domain.User, error) {
-	if cmd.Name == nil || cmd.Email == nil {
-		return nil, errors.New("name and email are required")
+	v := validator.New()
+
+	v.Check(cmd.Name != nil && *cmd.Name != "", "name", "must be provided")
+	v.Check(cmd.Name == nil || len(*cmd.Name) <= 500, "name", "must not be more than 500 characters")
+	v.Check(cmd.Email != nil && *cmd.Email != "", "email", "must be provided")
+	v.Check(cmd.Email == nil || validator.Matches(*cmd.Email, validator.EmailRX), "email", "must be a valid email address")
+
+	if !v.Valid() {
+		return nil, v.Errors 
 	}
 
 	user := &domain.User{
@@ -27,10 +34,6 @@ func (uc *useCase) Create(ctx context.Context, cmd UpsertUserCommand) (*domain.U
 		Name:      *cmd.Name,
 		Email:     *cmd.Email,
 		CreatedAt: time.Now().UTC(),
-	}
-
-	if err := domain.ValidateUser(user); err != nil {
-		return nil, err
 	}
 
 	if err := uc.repo.Create(ctx, user); err != nil {
@@ -46,15 +49,26 @@ func (uc *useCase) Update(ctx context.Context, id uuid.UUID, cmd UpsertUserComma
 		return nil, err
 	}
 
+	v := validator.New()
+
+	if cmd.Name != nil {
+		v.Check(*cmd.Name != "", "name", "must be provided")
+		v.Check(len(*cmd.Name) <= 500, "name", "must not be more than 500 characters")
+	}
+	if cmd.Email != nil {
+		v.Check(*cmd.Email != "", "email", "must be provided")
+		v.Check(validator.Matches(*cmd.Email, validator.EmailRX), "email", "must be a valid email address")
+	}
+
+	if !v.Valid() {
+		return nil, v.Errors
+	}
+
 	if cmd.Name != nil {
 		user.Name = *cmd.Name
 	}
 	if cmd.Email != nil {
 		user.Email = *cmd.Email
-	}
-
-	if err := domain.ValidateUser(user); err != nil {
-		return nil, err
 	}
 
 	if err := uc.repo.Update(ctx, user); err != nil {
