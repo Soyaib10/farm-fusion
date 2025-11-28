@@ -10,25 +10,25 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type UserRepositoryPG struct {
+type UserRepository struct {
 	db *pgxpool.Pool
 }
 
-func NewUserRepositoryPG(db *pgxpool.Pool) user.Repository {
-	return &UserRepositoryPG{db: db}
+func NewUserRepository(db *pgxpool.Pool) user.Repository {
+	return &UserRepository{db: db}
 }
 
-func (r *UserRepositoryPG) Create(ctx context.Context, user *domain.User) error {
-	query := `INSERT INTO users (id, name, email, created_at) 
-              VALUES ($1, $2, $3, $4)`
-	_, err := r.db.Exec(ctx, query, user.ID, user.Name, user.Email, user.CreatedAt)
+func (r *UserRepository) Create(ctx context.Context, user *domain.User) error {
+	query := `INSERT INTO users (id, name, email, password_hash, created_at) 
+              VALUES ($1, $2, $3, $4, $5)`
+	_, err := r.db.Exec(ctx, query, user.ID, user.Name, user.Email, user.PasswordHash, user.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("create user: %w", err)
 	}
 	return nil
 }
 
-func (r *UserRepositoryPG) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
+func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
 	query := `SELECT id, name, email, created_at FROM users WHERE id = $1`
 	row := r.db.QueryRow(ctx, query, id)
 
@@ -39,7 +39,18 @@ func (r *UserRepositoryPG) GetByID(ctx context.Context, id uuid.UUID) (*domain.U
 	return &u, nil
 }
 
-func (r *UserRepositoryPG) Update(ctx context.Context, user *domain.User) error {
+func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
+	query := `SELECT id, name, email, password_hash, created_at FROM users WHERE email = $1`
+	row := r.db.QueryRow(ctx, query, email)
+
+	var u domain.User
+	if err := row.Scan(&u.ID, &u.Name, &u.Email, &u.PasswordHash, &u.CreatedAt); err != nil {
+		return nil, fmt.Errorf("get user by email: %w", err)
+	}
+	return &u, nil
+}
+
+func (r *UserRepository) Update(ctx context.Context, user *domain.User) error {
 	query := `UPDATE users SET name = $1, email = $2 WHERE id = $3`
 	_, err := r.db.Exec(ctx, query, user.Name, user.Email, user.ID)
 	if err != nil {
@@ -48,7 +59,7 @@ func (r *UserRepositoryPG) Update(ctx context.Context, user *domain.User) error 
 	return nil
 }
 
-func (r *UserRepositoryPG) Delete(ctx context.Context, id uuid.UUID) error {
+func (r *UserRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	query := `DELETE FROM users WHERE id = $1`
 	_, err := r.db.Exec(ctx, query, id)
 	if err != nil {
@@ -57,7 +68,7 @@ func (r *UserRepositoryPG) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (r *UserRepositoryPG) List(ctx context.Context) ([]*domain.User, error) {
+func (r *UserRepository) List(ctx context.Context) ([]*domain.User, error) {
 	query := `SELECT id, name, email, created_at FROM users ORDER BY created_at DESC`
 	rows, err := r.db.Query(ctx, query)
 	if err != nil {

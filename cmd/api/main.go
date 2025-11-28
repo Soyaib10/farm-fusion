@@ -8,10 +8,12 @@ import (
 
 	"github.com/Soyaib10/farm-fusion/internal/app"
 	"github.com/Soyaib10/farm-fusion/internal/config"
-	httpDelivery "github.com/Soyaib10/farm-fusion/internal/delivery/http"
-	userHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/user"
 	"github.com/Soyaib10/farm-fusion/internal/infra/postgres"
-	userUsecase "github.com/Soyaib10/farm-fusion/internal/usecase/user"
+	"github.com/Soyaib10/farm-fusion/internal/usecase/auth"
+	"github.com/Soyaib10/farm-fusion/internal/usecase/user"
+	httpDelivery "github.com/Soyaib10/farm-fusion/internal/delivery/http"
+	authHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/auth"
+	userHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/user"
 	"github.com/Soyaib10/farm-fusion/pkg/logger"
 )
 
@@ -29,15 +31,19 @@ func main() {
 	}
 	defer db.Close()
 
-	application := app.New(cfg, logger, db)
+	app := app.NewApplication(cfg, logger, db)
 
-	userRepo := postgres.NewUserRepositoryPG(db)
-	userUsecase := userUsecase.New(userRepo)
+	userRepo := postgres.NewUserRepository(db)
+	userUsecase := user.New(userRepo)
+
+	authRepo := postgres.NewAuthRepository(db)
+	authUsecase := auth.New(userRepo, authRepo, cfg)
 
 	handlers := &httpDelivery.Handlers{
-		User: userHandler.NewHandler(application, userUsecase),
+		User: userHandler.New(app, userUsecase),
+		Auth: authHandler.New(app, authUsecase),
 	}
-	router := httpDelivery.NewHandlers(handlers)
+	router := httpDelivery.NewHandlers(handlers, cfg, app)
 
 	port := ":" + cfg.ServerPort
 	logger.PrintInfo("Server starting", map[string]string{"port": port})

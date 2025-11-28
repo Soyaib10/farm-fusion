@@ -5,6 +5,17 @@ import (
 	"net/http"
 )
 
+func (app *Application) InvalidCredentialsResponse(w http.ResponseWriter, r *http.Request) {
+	message := "invalid authentication credentials"
+	app.ErrorResponse(w, r, http.StatusUnauthorized, message)
+}
+
+func (app *Application) InvalidAuthenticationTokenResponse(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	message := "invalid or missing authentication token"
+	app.ErrorResponse(w, r, http.StatusUnauthorized, message)
+}
+
 func (app *Application) LogError(r *http.Request, err error) {
 	app.Logger.PrintError(err, map[string]string{
 		"request_method": r.Method,

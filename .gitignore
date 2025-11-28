@@ -2,6 +2,7 @@
 README.md
 *.txt
 *.json
+*.sh
 
 
 # Binaries for programs and plugins

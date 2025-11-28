@@ -11,9 +11,12 @@ import (
 )
 
 type Config struct {
-	ServerPort  string
-	DatabaseURL string
-	DBPool      DBPoolConfig
+	ServerPort           string
+	DatabaseURL          string
+	DBPool               DBPoolConfig
+	JWTSecret            string
+	AccessTokenDuration  time.Duration
+	RefreshTokenDuration time.Duration
 }
 
 type DBPoolConfig struct {
@@ -59,6 +62,9 @@ func LoadConfig() (*Config, error) {
 			HealthCheckPeriod: getEnvDuration("DB_HEALTH_CHECK_PERIOD", 5*time.Minute),
 			ConnectTimeout:    getEnvDuration("DB_CONNECT_TIMEOUT", 10*time.Second),
 		},
+		JWTSecret:            getEnv("JWT_SECRET", "your-secret-key"),
+		AccessTokenDuration:  getEnvDuration("ACCESS_TOKEN_DURATION", 15*time.Minute),
+		RefreshTokenDuration: getEnvDuration("REFRESH_TOKEN_DURATION", 7*24*time.Hour),
 	}, nil
 }
 

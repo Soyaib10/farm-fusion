@@ -16,7 +16,7 @@ type Handler struct {
 	usecase user.UseCase
 }
 
-func NewHandler(app *app.Application, usecase user.UseCase) *Handler {
+func New(app *app.Application, usecase user.UseCase) *Handler {
 	return &Handler{
 		app:     app,
 		usecase: usecase,

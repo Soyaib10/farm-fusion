@@ -12,7 +12,7 @@ type Application struct {
 	DB     *pgxpool.Pool
 }
 
-func New(cfg *config.Config, logger *logger.Logger, db *pgxpool.Pool) *Application {
+func NewApplication(cfg *config.Config, logger *logger.Logger, db *pgxpool.Pool) *Application {
 	return &Application{
 		Config: cfg,
 		Logger: logger,
