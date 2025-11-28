@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Literal, List, Dict
 import numpy as np
 
 router = APIRouter(prefix="/predict", tags=["predictions"])
@@ -39,10 +39,25 @@ def predict_crop(request: CropPredictionRequest):
         probabilities = models["crop"].predict_proba(features)[0]
         confidence = float(max(probabilities))
         
-        return {
+        # Get top 3 alternatives
+        classes = models["crop"].classes_
+        top_3_indices = np.argsort(probabilities)[-3:][::-1]
+        alternatives = [
+            {"crop": classes[i], "confidence": float(probabilities[i])}
+            for i in top_3_indices
+        ]
+        
+        response = {
             "crop": prediction,
-            "confidence": confidence
+            "confidence": confidence,
+            "alternatives": alternatives
         }
+        
+        # Add warning for low confidence
+        if confidence < 0.6:
+            response["warning"] = "Low confidence prediction. Consider multiple options."
+        
+        return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -65,9 +80,24 @@ def predict_fertilizer(request: FertilizerPredictionRequest):
         probabilities = models["fertilizer"].predict_proba(features)[0]
         confidence = float(max(probabilities))
         
-        return {
+        # Get top 3 alternatives
+        classes = models["fertilizer"].classes_
+        top_3_indices = np.argsort(probabilities)[-3:][::-1]
+        alternatives = [
+            {"fertilizer": classes[i], "confidence": float(probabilities[i])}
+            for i in top_3_indices
+        ]
+        
+        response = {
             "fertilizer": prediction,
-            "confidence": confidence
+            "confidence": confidence,
+            "alternatives": alternatives
         }
+        
+        # Add warning for low confidence
+        if confidence < 0.6:
+            response["warning"] = "Low confidence prediction. Consider multiple options."
+        
+        return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
