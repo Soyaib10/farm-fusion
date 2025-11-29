@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/Soyaib10/farm-fusion/internal/app"
 	"github.com/Soyaib10/farm-fusion/internal/config"
@@ -42,7 +43,10 @@ func main() {
 	authRepo := postgres.NewAuthRepository(db)
 	authUsecase := auth.NewUseCase(userRepo, authRepo, cfg)
 
-	mlClient := ml.NewMLClient(cfg.MLServiceURL)
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	mlClient := ml.NewMLClient(cfg.MLServiceURL, httpClient, logger)
 	recommendationUsecase := recommendation.NewUseCase(mlClient)
 
 	handlers := &httpDelivery.Handlers{
