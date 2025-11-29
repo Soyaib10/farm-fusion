@@ -8,7 +8,6 @@ import (
 )
 
 type UseCase interface {
-	Create(ctx context.Context, cmd UpsertUserCommand) (*domain.User, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
 	Update(ctx context.Context, id uuid.UUID, cmd UpsertUserCommand) (*domain.User, error)
 	Delete(ctx context.Context, id uuid.UUID) error

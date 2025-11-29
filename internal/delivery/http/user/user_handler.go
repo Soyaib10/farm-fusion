@@ -2,7 +2,6 @@ package user
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/Soyaib10/farm-fusion/internal/app"
@@ -20,37 +19,6 @@ func NewHandler(app *app.Application, usecase user.UseCase) *Handler {
 	return &Handler{
 		app:     app,
 		usecase: usecase,
-	}
-}
-
-func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	var input UpsertUserJSON
-	if err := h.app.ReadJSON(w, r, &input); err != nil {
-		h.app.BadRequestResponse(w, r, err)
-		return
-	}
-
-	cmd := user.UpsertUserCommand{
-		Name:  input.Name,
-		Email: input.Email,
-	}
-
-	created, err := h.usecase.Create(r.Context(), cmd)
-	if err != nil {
-		if validationErrors, ok := err.(validator.ValidationError); ok {
-			h.app.FailedValidationResponse(w, r, validationErrors)
-			return
-		}
-		h.app.ServerErrorResponse(w, r, err)
-		return
-	}
-
-	headers := make(http.Header)
-	headers.Set("Location", fmt.Sprintf("/v1/users/%s", created.ID))
-
-	err = h.app.WriteJSON(w, http.StatusCreated, app.Envelope{"user": created}, headers)
-	if err != nil {
-		h.app.ServerErrorResponse(w, r, err)
 	}
 }
 

@@ -42,7 +42,7 @@ func main() {
 	authRepo := postgres.NewAuthRepository(db)
 	authUsecase := auth.NewUseCase(userRepo, authRepo, cfg)
 
-	mlClient := ml.NewPythonMLClient(cfg.MLServiceURL)
+	mlClient := ml.NewMLClient(cfg.MLServiceURL)
 	recommendationUsecase := recommendation.NewUseCase(mlClient)
 
 	handlers := &httpDelivery.Handlers{

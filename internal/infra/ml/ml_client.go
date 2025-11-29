@@ -11,19 +11,19 @@ import (
 	"github.com/Soyaib10/farm-fusion/internal/usecase/recommendation"
 )
 
-type PythonMLClient struct {
+type MLClient struct {
 	baseURL string
 	client  *http.Client
 }
 
-func NewPythonMLClient(baseURL string) recommendation.Repository {
-	return &PythonMLClient{
+func NewMLClient(baseURL string) recommendation.Repository {
+	return &MLClient{
 		baseURL: baseURL,
 		client:  &http.Client{},
 	}
 }
 
-func (c *PythonMLClient) CropRecommendation(ctx context.Context, cmd recommendation.CropCommand) (*domain.CropRecommendation, error) {
+func (c *MLClient) CropRecommendation(ctx context.Context, cmd recommendation.CropCommand) (*domain.CropRecommendation, error) {
 	reqBody := map[string]float64{
 		"N":           cmd.N,
 		"P":           cmd.P,
@@ -85,7 +85,7 @@ func (c *PythonMLClient) CropRecommendation(ctx context.Context, cmd recommendat
 	}, nil
 }
 
-func (c *PythonMLClient) FertilizerRecommendation(ctx context.Context, cmd recommendation.FertilizerCommand) (*domain.FertilizerRecommendation, error) {
+func (c *MLClient) FertilizerRecommendation(ctx context.Context, cmd recommendation.FertilizerCommand) (*domain.FertilizerRecommendation, error) {
 	reqBody := map[string]interface{}{
 		"temperature":   cmd.Temperature,
 		"humidity":      cmd.Humidity,
