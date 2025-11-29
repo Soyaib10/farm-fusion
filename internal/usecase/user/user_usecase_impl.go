@@ -13,7 +13,7 @@ type useCase struct {
 	repo Repository
 }
 
-func New(repo Repository) UseCase {
+func NewUseCase(repo Repository) UseCase {
 	return &useCase{repo: repo}
 }
 

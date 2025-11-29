@@ -21,7 +21,7 @@ type useCase struct {
 	cfg      *config.Config
 }
 
-func New(userRepo user.Repository, repo Repository, cfg *config.Config) UseCase {
+func NewUseCase(userRepo user.Repository, repo Repository, cfg *config.Config) UseCase {
 	return &useCase{
 		userRepo: userRepo,
 		repo:     repo,

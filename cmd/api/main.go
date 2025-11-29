@@ -8,11 +8,14 @@ import (
 
 	"github.com/Soyaib10/farm-fusion/internal/app"
 	"github.com/Soyaib10/farm-fusion/internal/config"
+	"github.com/Soyaib10/farm-fusion/internal/infra/ml"
 	"github.com/Soyaib10/farm-fusion/internal/infra/postgres"
 	"github.com/Soyaib10/farm-fusion/internal/usecase/auth"
+	"github.com/Soyaib10/farm-fusion/internal/usecase/recommendation"
 	"github.com/Soyaib10/farm-fusion/internal/usecase/user"
 	httpDelivery "github.com/Soyaib10/farm-fusion/internal/delivery/http"
 	authHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/auth"
+	recommendationHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/recommendation"
 	userHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/user"
 	"github.com/Soyaib10/farm-fusion/pkg/logger"
 )
@@ -23,7 +26,7 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	logger := logger.New(os.Stdout, logger.LevelInfo)
+	logger := logger.NewLogger(os.Stdout, logger.LevelInfo)
 
 	db, err := postgres.ConnectDB(context.Background(), cfg, logger)
 	if err != nil {
@@ -34,14 +37,18 @@ func main() {
 	app := app.NewApplication(cfg, logger, db)
 
 	userRepo := postgres.NewUserRepository(db)
-	userUsecase := user.New(userRepo)
+	userUsecase := user.NewUseCase(userRepo)
 
 	authRepo := postgres.NewAuthRepository(db)
-	authUsecase := auth.New(userRepo, authRepo, cfg)
+	authUsecase := auth.NewUseCase(userRepo, authRepo, cfg)
+
+	mlClient := ml.NewPythonMLClient(cfg.MLServiceURL)
+	recommendationUsecase := recommendation.NewUseCase(mlClient)
 
 	handlers := &httpDelivery.Handlers{
-		User: userHandler.New(app, userUsecase),
-		Auth: authHandler.New(app, authUsecase),
+		User:           userHandler.NewHandler(app, userUsecase),
+		Auth:           authHandler.NewHandler(app, authUsecase),
+		Recommendation: recommendationHandler.NewHandler(app, recommendationUsecase),
 	}
 	router := httpDelivery.NewHandlers(handlers, cfg, app)
 

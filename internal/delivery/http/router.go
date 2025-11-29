@@ -5,13 +5,15 @@ import (
 	"github.com/Soyaib10/farm-fusion/internal/config"
 	"github.com/Soyaib10/farm-fusion/internal/delivery/http/auth"
 	"github.com/Soyaib10/farm-fusion/internal/delivery/http/middleware"
+	"github.com/Soyaib10/farm-fusion/internal/delivery/http/recommendation"
 	"github.com/Soyaib10/farm-fusion/internal/delivery/http/user"
 	"github.com/go-chi/chi/v5"
 )
 
 type Handlers struct {
-	Auth *auth.Handler
-	User *user.Handler
+	Auth           *auth.Handler
+	User           *user.Handler
+	Recommendation *recommendation.Handler
 }
 
 func NewHandlers(h *Handlers, cfg *config.Config, app *app.Application) *chi.Mux {
@@ -27,6 +29,9 @@ func NewHandlers(h *Handlers, cfg *config.Config, app *app.Application) *chi.Mux
 			r.Use(jwtMiddleware.RequireAuthenticatedUser)
 			r.Route("/users", func(r chi.Router) {
 				user.RegisterRoutes(r, h.User)
+			})
+			r.Route("/recommend", func(r chi.Router) {
+				recommendation.RegisterRoutes(r, h.Recommendation)
 			})
 		})
 	})

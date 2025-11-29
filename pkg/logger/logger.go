@@ -37,7 +37,7 @@ type Logger struct {
 	mu       sync.Mutex
 }
 
-func New(out io.Writer, minLevel Level) *Logger {
+func NewLogger(out io.Writer, minLevel Level) *Logger {
 	return &Logger{
 		out:      out,
 		minLevel: minLevel,

@@ -17,6 +17,7 @@ type Config struct {
 	JWTSecret            string
 	AccessTokenDuration  time.Duration
 	RefreshTokenDuration time.Duration
+	MLServiceURL         string
 }
 
 type DBPoolConfig struct {
@@ -65,6 +66,7 @@ func LoadConfig() (*Config, error) {
 		JWTSecret:            getEnv("JWT_SECRET", "your-secret-key"),
 		AccessTokenDuration:  getEnvDuration("ACCESS_TOKEN_DURATION", 15*time.Minute),
 		RefreshTokenDuration: getEnvDuration("REFRESH_TOKEN_DURATION", 7*24*time.Hour),
+		MLServiceURL:         getEnv("ML_SERVICE_URL", "http://localhost:8000"),
 	}, nil
 }
 

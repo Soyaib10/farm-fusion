@@ -12,7 +12,7 @@ type Handler struct {
 	usecase auth.UseCase
 }
 
-func New(app *app.Application, usecase auth.UseCase) *Handler {
+func NewHandler(app *app.Application, usecase auth.UseCase) *Handler {
 	return &Handler{
 		app:     app,
 		usecase: usecase,
