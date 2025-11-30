@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -72,4 +73,12 @@ func (m *JWTMiddleware) RequireAuthenticatedUser(next http.Handler) http.Handler
 			return
 		}
 	})
+}
+
+func GetUserIDFromContext(r *http.Request) (uuid.UUID, error) {
+	userID, ok := r.Context().Value("user_id").(uuid.UUID)
+	if !ok {
+		return uuid.Nil, errors.New("user ID not found in context")
+	}
+	return userID, nil
 }

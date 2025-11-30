@@ -9,15 +9,17 @@ import (
 
 	"github.com/Soyaib10/farm-fusion/internal/app"
 	"github.com/Soyaib10/farm-fusion/internal/config"
+	httpDelivery "github.com/Soyaib10/farm-fusion/internal/delivery/http"
+	authHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/auth"
+	farmHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/farm"
+	recommendationHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/recommendation"
+	userHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/user"
 	"github.com/Soyaib10/farm-fusion/internal/infra/ml"
 	"github.com/Soyaib10/farm-fusion/internal/infra/postgres"
 	"github.com/Soyaib10/farm-fusion/internal/usecase/auth"
+	"github.com/Soyaib10/farm-fusion/internal/usecase/farm"
 	"github.com/Soyaib10/farm-fusion/internal/usecase/recommendation"
 	"github.com/Soyaib10/farm-fusion/internal/usecase/user"
-	httpDelivery "github.com/Soyaib10/farm-fusion/internal/delivery/http"
-	authHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/auth"
-	recommendationHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/recommendation"
-	userHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/user"
 	"github.com/Soyaib10/farm-fusion/pkg/logger"
 )
 
@@ -43,6 +45,9 @@ func main() {
 	authRepo := postgres.NewAuthRepository(db)
 	authUsecase := auth.NewUseCase(userRepo, authRepo, cfg)
 
+	farmRepo := postgres.NewFarmRepository(db)
+	farmUsecase := farm.NewUseCase(farmRepo)
+
 	httpClient := &http.Client{
 		Timeout: 10 * time.Second,
 	}
@@ -53,6 +58,7 @@ func main() {
 		User:           userHandler.NewHandler(app, userUsecase),
 		Auth:           authHandler.NewHandler(app, authUsecase),
 		Recommendation: recommendationHandler.NewHandler(app, recommendationUsecase),
+		Farm:           farmHandler.NewHandler(app, farmUsecase),
 	}
 	router := httpDelivery.NewHandlers(handlers, cfg, app)
 
