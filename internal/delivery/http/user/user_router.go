@@ -3,6 +3,7 @@ package user
 import "github.com/go-chi/chi/v5"
 
 func RegisterRoutes(r chi.Router, h *Handler) {
+	r.Get("/me", h.GetMe)
 	r.Get("/", h.List)
 	r.Get("/{id}", h.GetByID)
 	r.Patch("/{id}", h.Update)

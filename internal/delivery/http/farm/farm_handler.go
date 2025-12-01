@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/Soyaib10/farm-fusion/internal/app"
-	"github.com/Soyaib10/farm-fusion/internal/delivery/http/middleware" // New import
+	"github.com/Soyaib10/farm-fusion/internal/delivery/http/middleware"
 	"github.com/Soyaib10/farm-fusion/internal/usecase/farm"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -36,7 +36,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newFarm, err := h.usecase.Create(r.Context(), userID, input.Name, input.Latitude, input.Longitude)
+	cmd := farm.UpsertFarmCommand {
+		Name: &input.Name,
+		Longitude: &input.Longitude,
+		Latitude: &input.Latitude,
+	}
+
+	newFarm, err := h.usecase.Create(r.Context(), userID, cmd)
 	if err != nil {
 		h.app.ServerErrorResponse(w, r, err)
 		return
@@ -53,7 +59,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		h.app.ServerErrorResponse(w, r, err)
 	}
 }
-func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
 	farmIDStr := chi.URLParam(r, "farmID")
 	farmID, err := uuid.Parse(farmIDStr)
 	if err != nil {
@@ -85,7 +91,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) ListByUserID(w http.ResponseWriter, r *http.Request) {
 	userID, err := middleware.GetUserIDFromContext(r)
 	if err != nil {
 		h.app.ServerErrorResponse(w, r, err)
@@ -132,7 +138,13 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updatedFarm, err := h.usecase.Update(r.Context(), farmID, userID, input.Name, input.Latitude, input.Longitude)
+	cmd := farm.UpsertFarmCommand {
+		Name: &input.Name,
+		Longitude: &input.Longitude,
+		Latitude: &input.Latitude,
+	}
+
+	updatedFarm, err := h.usecase.Update(r.Context(), farmID, userID, cmd)
 	if err != nil {
 		h.app.ServerErrorResponse(w, r, err)
 		return

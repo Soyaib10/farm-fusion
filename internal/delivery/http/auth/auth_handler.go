@@ -38,7 +38,12 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.app.WriteJSON(w, http.StatusCreated, app.Envelope{"auth": resp}, nil); err != nil {
+	response := map[string]interface{}{
+		"message": "Registration successful. Please login.",
+		"user":    toUserJSON(resp.User),
+	}
+
+	if err := h.app.WriteJSON(w, http.StatusCreated, app.Envelope{"data": response}, nil); err != nil {
 		h.app.ServerErrorResponse(w, r, err)
 	}
 }

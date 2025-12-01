@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/Soyaib10/farm-fusion/internal/app"
+	"github.com/Soyaib10/farm-fusion/internal/delivery/http/middleware"
 	"github.com/Soyaib10/farm-fusion/internal/domain"
 	"github.com/Soyaib10/farm-fusion/internal/usecase/user"
 	"github.com/Soyaib10/farm-fusion/internal/validator"
@@ -19,6 +20,30 @@ func NewHandler(app *app.Application, usecase user.UseCase) *Handler {
 	return &Handler{
 		app:     app,
 		usecase: usecase,
+	}
+}
+
+func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
+	userID, err := middleware.GetUserIDFromContext(r)
+	if err != nil {
+		h.app.ServerErrorResponse(w, r, err)
+		return
+	}
+
+	user, err := h.usecase.GetByID(r.Context(), userID)
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrNotFound):
+			h.app.NotFoundResponse(w, r)
+		default:
+			h.app.ServerErrorResponse(w, r, err)
+		}
+		return
+	}
+
+	err = h.app.WriteJSON(w, http.StatusOK, app.Envelope{"user": user}, nil)
+	if err != nil {
+		h.app.ServerErrorResponse(w, r, err)
 	}
 }
 

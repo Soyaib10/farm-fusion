@@ -14,12 +14,14 @@ import (
 	farmHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/farm"
 	recommendationHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/recommendation"
 	userHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/user"
+	weatherHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/weather"
 	"github.com/Soyaib10/farm-fusion/internal/infra/ml"
 	"github.com/Soyaib10/farm-fusion/internal/infra/postgres"
 	"github.com/Soyaib10/farm-fusion/internal/usecase/auth"
-	"github.com/Soyaib10/farm-fusion/internal/usecase/farm"
+	farmUsecase "github.com/Soyaib10/farm-fusion/internal/usecase/farm"
 	"github.com/Soyaib10/farm-fusion/internal/usecase/recommendation"
 	"github.com/Soyaib10/farm-fusion/internal/usecase/user"
+	weatherUsecase "github.com/Soyaib10/farm-fusion/internal/usecase/weather"
 	"github.com/Soyaib10/farm-fusion/pkg/logger"
 )
 
@@ -46,7 +48,10 @@ func main() {
 	authUsecase := auth.NewUseCase(userRepo, authRepo, cfg)
 
 	farmRepo := postgres.NewFarmRepository(db)
-	farmUsecase := farm.NewUseCase(farmRepo)
+	farmUsecase := farmUsecase.NewUseCase(farmRepo)
+
+	weatherRepo := postgres.NewWeatherRepository(db)
+	weatherUsecase := weatherUsecase.NewUseCase(weatherRepo, farmUsecase)
 
 	httpClient := &http.Client{
 		Timeout: 10 * time.Second,
@@ -59,6 +64,7 @@ func main() {
 		Auth:           authHandler.NewHandler(app, authUsecase),
 		Recommendation: recommendationHandler.NewHandler(app, recommendationUsecase),
 		Farm:           farmHandler.NewHandler(app, farmUsecase),
+		Weather:        weatherHandler.NewHandler(app, weatherUsecase),
 	}
 	router := httpDelivery.NewHandlers(handlers, cfg, app)
 

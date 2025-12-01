@@ -8,9 +8,9 @@ import (
 )
 
 type UseCase interface {
-	Create(ctx context.Context, userID uuid.UUID, name string, latitude, longitude float64) (*domain.Farm, error)
+	Create(ctx context.Context, userID uuid.UUID, cmd UpsertFarmCommand) (*domain.Farm, error)
 	GetByID(ctx context.Context, farmID uuid.UUID, userID uuid.UUID) (*domain.Farm, error)
 	ListByUserID(ctx context.Context, userID uuid.UUID) ([]*domain.Farm, error)
-	Update(ctx context.Context, farmID uuid.UUID, userID uuid.UUID, name string, latitude, longitude float64) (*domain.Farm, error)
+	Update(ctx context.Context, farmID uuid.UUID, userID uuid.UUID, cmd UpsertFarmCommand) (*domain.Farm, error)
 	Delete(ctx context.Context, farmID uuid.UUID, userID uuid.UUID) error
 }

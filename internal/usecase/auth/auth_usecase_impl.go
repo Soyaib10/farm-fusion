@@ -49,7 +49,9 @@ func (uc *useCase) Register(ctx context.Context, cmd RegisterCommand) (*AuthResp
 		return nil, fmt.Errorf("create user: %w", err)
 	}
 
-	return uc.generateTokens(ctx, u)
+	return &AuthResponse{
+		User: u,
+	}, nil
 }
 
 func (uc *useCase) Login(ctx context.Context, cmd LoginCommand) (*AuthResponse, error) {

@@ -17,13 +17,13 @@ func NewUseCase(repo Repository) UseCase {
 	return &useCase{repo: repo}
 }
 
-func (uc *useCase) Create(ctx context.Context, userID uuid.UUID, name string, latitude, longitude float64) (*domain.Farm, error) {
+func (uc *useCase) Create(ctx context.Context, userID uuid.UUID, cmd UpsertFarmCommand) (*domain.Farm, error) {
 	farm := &domain.Farm{
 		ID:        uuid.New(),
 		UserID:    userID,
-		Name:      name,
-		Latitude:  latitude,
-		Longitude: longitude,
+		Name:      *cmd.Name,
+		Latitude:  *cmd.Latitude,
+		Longitude: *cmd.Longitude,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -38,7 +38,7 @@ func (uc *useCase) Create(ctx context.Context, userID uuid.UUID, name string, la
 func (uc *useCase) GetByID(ctx context.Context, farmID uuid.UUID, userID uuid.UUID) (*domain.Farm, error) {
 	farm, err := uc.repo.GetByID(ctx, farmID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get farm: %w", err) 
+		return nil, fmt.Errorf("failed to get farm: %w", err)
 	}
 
 	if farm.UserID != userID {
@@ -56,7 +56,7 @@ func (uc *useCase) ListByUserID(ctx context.Context, userID uuid.UUID) ([]*domai
 	return farms, nil
 }
 
-func (uc *useCase) Update(ctx context.Context, farmID uuid.UUID, userID uuid.UUID, name string, latitude, longitude float64) (*domain.Farm, error) {
+func (uc *useCase) Update(ctx context.Context, farmID uuid.UUID, userID uuid.UUID, cmd UpsertFarmCommand) (*domain.Farm, error) {
 	// 1. Fetch
 	existingFarm, err := uc.repo.GetByID(ctx, farmID)
 	if err != nil {
@@ -70,14 +70,13 @@ func (uc *useCase) Update(ctx context.Context, farmID uuid.UUID, userID uuid.UUI
 
 	// 3. Execute
 	updatedFarm := &domain.Farm{
-
 		ID:        farmID,
-		UserID:    userID, 
-		Name:      name,
-		Latitude:  latitude,
-		Longitude: longitude,
+		UserID:    userID,
+		Name:      *cmd.Name,
+		Latitude:  *cmd.Latitude,
+		Longitude: *cmd.Longitude,
 		UpdatedAt: time.Now(),
-		CreatedAt: existingFarm.CreatedAt, 
+		CreatedAt: existingFarm.CreatedAt,
 	}
 
 	if err := uc.repo.Update(ctx, updatedFarm); err != nil {

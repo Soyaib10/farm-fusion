@@ -8,6 +8,7 @@ import (
 	"github.com/Soyaib10/farm-fusion/internal/delivery/http/middleware"
 	"github.com/Soyaib10/farm-fusion/internal/delivery/http/recommendation"
 	"github.com/Soyaib10/farm-fusion/internal/delivery/http/user"
+	"github.com/Soyaib10/farm-fusion/internal/delivery/http/weather"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -16,6 +17,7 @@ type Handlers struct {
 	User           *user.Handler
 	Recommendation *recommendation.Handler
 	Farm           *farm.Handler
+	Weather        *weather.Handler
 }
 
 func NewHandlers(h *Handlers, cfg *config.Config, app *app.Application) *chi.Mux {
@@ -36,7 +38,7 @@ func NewHandlers(h *Handlers, cfg *config.Config, app *app.Application) *chi.Mux
 				recommendation.RegisterRoutes(r, h.Recommendation)
 			})
 			r.Route("/farms", func(r chi.Router) {
-				farm.RegisterRoutes(r, h.Farm)
+				farm.RegisterRoutes(r, h.Farm, h.Weather)
 			})
 		})
 	})
