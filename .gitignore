@@ -1,5 +1,6 @@
 #Readme
-*.md
+#*.md
+docs/
 *.txt
 *.json
 *.sh
