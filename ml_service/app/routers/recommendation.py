@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal, List, Dict
 import numpy as np
+import pandas as pd
 
 router = APIRouter(prefix="/predict", tags=["predictions"])
 
@@ -29,11 +30,11 @@ def predict_crop(request: CropPredictionRequest):
     from app.main import models
     
     try:
-        features = np.array([[
+        features = pd.DataFrame([[
             request.N, request.P, request.K,
             request.temperature, request.humidity,
             request.ph, request.rainfall
-        ]])
+        ]], columns=["N", "P", "K", "temperature", "humidity", "ph", "rainfall"])
         
         prediction = models["crop"].predict(features)[0]
         probabilities = models["crop"].predict_proba(features)[0]
@@ -70,11 +71,11 @@ def predict_fertilizer(request: FertilizerPredictionRequest):
         soil_encoded = models["soil_encoder"].transform([request.soil_type])[0]
         crop_encoded = models["crop_encoder"].transform([request.crop_type])[0]
         
-        features = np.array([[
+        features = pd.DataFrame([[
             request.temperature, request.humidity, request.soil_moisture,
             soil_encoded, crop_encoded,
             request.nitrogen, request.potassium, request.phosphorous
-        ]])
+        ]], columns=["Temparature", "Humidity", "Soil Moisture", "Soil Type", "Crop Type", "Nitrogen", "Potassium", "Phosphorous"])
         
         prediction = models["fertilizer"].predict(features)[0]
         probabilities = models["fertilizer"].predict_proba(features)[0]

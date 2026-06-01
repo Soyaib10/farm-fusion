@@ -17,8 +17,9 @@ type UpdateFarmJSON struct {
 }
 
 type FarmResponse struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	Latitude  float64   `json:"latitude"`
-	Longitude float64   `json:"longitude"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Latitude    float64   `json:"latitude"`
+	Longitude   float64   `json:"longitude"`
+	LocationKey string    `json:"location_key"`
 }

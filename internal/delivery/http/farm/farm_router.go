@@ -19,4 +19,3 @@ func RegisterRoutes(r chi.Router, farmHandler *Handler, weatherHandler *weather.
 		})
 	})
 }
-

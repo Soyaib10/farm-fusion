@@ -1,9 +1,11 @@
 #Readme
-#*.md
+*.md
+!readme.md
 docs/
 *.txt
 *.json
 *.sh
+!run.sh
 
 
 # Binaries for programs and plugins

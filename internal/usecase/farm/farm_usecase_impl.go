@@ -18,14 +18,18 @@ func NewUseCase(repo Repository) UseCase {
 }
 
 func (uc *useCase) Create(ctx context.Context, userID uuid.UUID, cmd UpsertFarmCommand) (*domain.Farm, error) {
+	lat := *cmd.Latitude
+	lon := *cmd.Longitude
+
 	farm := &domain.Farm{
-		ID:        uuid.New(),
-		UserID:    userID,
-		Name:      *cmd.Name,
-		Latitude:  *cmd.Latitude,
-		Longitude: *cmd.Longitude,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		ID:          uuid.New(),
+		UserID:      userID,
+		Name:        *cmd.Name,
+		Latitude:    lat,
+		Longitude:   lon,
+		LocationKey: domain.NewLocationKey(lat, lon),
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}
 
 	if err := uc.repo.Create(ctx, farm); err != nil {
@@ -69,14 +73,18 @@ func (uc *useCase) Update(ctx context.Context, farmID uuid.UUID, userID uuid.UUI
 	}
 
 	// 3. Execute
+	lat := *cmd.Latitude
+	lon := *cmd.Longitude
+
 	updatedFarm := &domain.Farm{
-		ID:        farmID,
-		UserID:    userID,
-		Name:      *cmd.Name,
-		Latitude:  *cmd.Latitude,
-		Longitude: *cmd.Longitude,
-		UpdatedAt: time.Now(),
-		CreatedAt: existingFarm.CreatedAt,
+		ID:          farmID,
+		UserID:      userID,
+		Name:        *cmd.Name,
+		Latitude:    lat,
+		Longitude:   lon,
+		LocationKey: domain.NewLocationKey(lat, lon),
+		UpdatedAt:   time.Now(),
+		CreatedAt:   existingFarm.CreatedAt,
 	}
 
 	if err := uc.repo.Update(ctx, updatedFarm); err != nil {

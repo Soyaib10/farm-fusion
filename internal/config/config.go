@@ -18,6 +18,36 @@ type Config struct {
 	AccessTokenDuration  time.Duration
 	RefreshTokenDuration time.Duration
 	MLServiceURL         string
+	Redis                RedisConfig
+	RabbitMQ             RabbitMQConfig
+	Weather              WeatherConfig
+	SMTP                 SMTPConfig
+}
+
+type RedisConfig struct {
+	URL      string
+	Addr     string
+	Password string
+	DB       int
+}
+
+type RabbitMQConfig struct {
+	URL   string
+	Queue string
+}
+
+type WeatherConfig struct {
+	BaseURL  string
+	APIKey   string
+	CacheTTL int
+}
+
+type SMTPConfig struct {
+	Host     string
+	Port     int
+	User     string
+	Password string
+	From     string
 }
 
 type DBPoolConfig struct {
@@ -53,7 +83,7 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return &Config{
-		ServerPort:  getEnv("SERVER_PORT", "8080"),
+		ServerPort:  getEnv("SERVER_PORT", getEnv("PORT", "8080")),
 		DatabaseURL: dbURL,
 		DBPool: DBPoolConfig{
 			MaxConns:          maxConns,
@@ -67,6 +97,28 @@ func LoadConfig() (*Config, error) {
 		AccessTokenDuration:  getEnvDuration("ACCESS_TOKEN_DURATION", 15*time.Minute),
 		RefreshTokenDuration: getEnvDuration("REFRESH_TOKEN_DURATION", 7*24*time.Hour),
 		MLServiceURL:         getEnv("ML_SERVICE_URL", "http://localhost:8000"),
+		Redis: RedisConfig{
+			URL:      getEnv("REDIS_URL", ""),
+			Addr:     getEnv("REDIS_ADDR", "localhost:6379"),
+			Password: getEnv("REDIS_PASSWORD", ""),
+			DB:       getEnvInt("REDIS_DB", 0),
+		},
+		RabbitMQ: RabbitMQConfig{
+			URL:   getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+			Queue: getEnv("RABBITMQ_QUEUE", "weather.notifications"),
+		},
+		Weather: WeatherConfig{
+			BaseURL:  getEnv("OPENWEATHER_BASE_URL", "https://api.openweathermap.org/data/2.5/forecast"),
+			APIKey:   getEnv("OPENWEATHER_API_KEY", ""),
+			CacheTTL: getEnvInt("WEATHER_CACHE_TTL", 10800),
+		},
+		SMTP: SMTPConfig{
+			Host:     getEnv("SMTP_HOST", "smtp.gmail.com"),
+			Port:     getEnvInt("SMTP_PORT", 587),
+			User:     getEnv("SMTP_USER", ""),
+			Password: getEnv("SMTP_PASSWORD", getEnv("SMTP_PASS", "")),
+			From:     getEnv("SMTP_FROM", "noreply@farmfusion.com"),
+		},
 	}, nil
 }
 
@@ -90,6 +142,15 @@ func getEnvDuration(key string, fallback time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
+		}
+	}
+	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
 		}
 	}
 	return fallback
