@@ -14,7 +14,7 @@ cleanup() {
   log "Shutting down..."
   kill "$API_PID" "$SCHEDULER_PID" "$WORKER_PID" "$ML_PID" 2>/dev/null || true
   wait 2>/dev/null
-  docker compose stop
+  docker compose down -v
 }
 trap cleanup EXIT INT TERM
 
