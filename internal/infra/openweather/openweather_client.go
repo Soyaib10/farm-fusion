@@ -3,28 +3,35 @@ package openweather
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/Soyaib10/farm-fusion/internal/domain"
+	"github.com/Soyaib10/farm-fusion/internal/usecase/notification"
+	"github.com/Soyaib10/farm-fusion/pkg/logger"
+	"github.com/redis/go-redis/v9"
 )
 
 type Client struct {
 	baseURL    string
 	apiKey     string
 	httpClient *http.Client
+	cache      notification.ForecastRepository
+	logger     *logger.Logger
 }
 
-func NewClient(baseURL, apiKey string) *Client {
+func NewClient(baseURL, apiKey string, cache notification.ForecastRepository, logger *logger.Logger) *Client {
 	return &Client{
 		baseURL:    baseURL,
 		apiKey:     apiKey,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
+		cache:      cache,
+		logger:     logger,
 	}
 }
 
-// owmResponse maps the relevant fields from OpenWeatherMap /forecast response.
 type owmResponse struct {
 	List []struct {
 		Dt   int64 `json:"dt"`
@@ -42,8 +49,17 @@ type owmResponse struct {
 }
 
 func (c *Client) FetchForecast(ctx context.Context, lat, lon float64, locationKey string) (*domain.WeatherForecast, error) {
-	url := fmt.Sprintf("%s?lat=%f&lon=%f&appid=%s&units=metric&cnt=16", c.baseURL, lat, lon, c.apiKey)
+	// cache-aside: check Redis first
+	cached, err := c.cache.Get(ctx, locationKey)
+	if err == nil {
+		return cached, nil
+	}
+	if !errors.Is(err, redis.Nil) {
+		c.logger.PrintError(err, map[string]string{"operation": "forecast_cache_get", "location_key": locationKey})
+	}
 
+	// fetch from API
+	url := fmt.Sprintf("%s?lat=%f&lon=%f&appid=%s&units=metric&cnt=16", c.baseURL, lat, lon, c.apiKey)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
@@ -75,11 +91,18 @@ func (c *Client) FetchForecast(ctx context.Context, lat, lon float64, locationKe
 		}
 	}
 
-	return &domain.WeatherForecast{
+	forecast := &domain.WeatherForecast{
 		LocationKey: locationKey,
 		Latitude:    lat,
 		Longitude:   lon,
 		DataPoints:  points,
 		FetchedAt:   time.Now().UTC(),
-	}, nil
+	}
+
+	// store in cache, non-fatal on error
+	if err := c.cache.Set(ctx, forecast); err != nil {
+		c.logger.PrintError(err, map[string]string{"operation": "forecast_cache_set", "location_key": locationKey})
+	}
+
+	return forecast, nil
 }
