@@ -11,7 +11,6 @@ import (
 	"github.com/Soyaib10/farm-fusion/internal/domain"
 	"github.com/Soyaib10/farm-fusion/internal/usecase/notification"
 	"github.com/Soyaib10/farm-fusion/pkg/logger"
-	"github.com/redis/go-redis/v9"
 )
 
 type Client struct {
@@ -54,12 +53,16 @@ func (c *Client) FetchForecast(ctx context.Context, lat, lon float64, locationKe
 	if err == nil {
 		return cached, nil
 	}
-	if !errors.Is(err, redis.Nil) {
+	if !errors.Is(err, notification.ErrCacheMiss) {
 		c.logger.PrintError(err, map[string]string{"operation": "forecast_cache_get", "location_key": locationKey})
 	}
 
-	// fetch from API
-	url := fmt.Sprintf("%s?lat=%f&lon=%f&appid=%s&units=metric&cnt=16", c.baseURL, lat, lon, c.apiKey)
+	if c.apiKey == "" {
+		return nil, fmt.Errorf("openweather api key is required")
+	}
+
+	// fetch 24 hours of 3-hour forecast points
+	url := fmt.Sprintf("%s?lat=%f&lon=%f&appid=%s&units=metric&cnt=8", c.baseURL, lat, lon, c.apiKey)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)

@@ -55,15 +55,15 @@ type Threshold struct {
 }
 
 type NotificationPayload struct {
-	NotificationID  uuid.UUID        `json:"notification_id"`
-	FarmID          uuid.UUID        `json:"farm_id"`
-	UserID          uuid.UUID        `json:"user_id"`
-	UserEmail       string           `json:"user_email"`
-	FarmName        string           `json:"farm_name"`
-	Location        Location         `json:"location"`
-	Timestamp       time.Time        `json:"timestamp"`
-	Alerts          []WeatherAlert   `json:"alerts"`
-	ForecastSummary ForecastSummary  `json:"forecast_summary"`
+	NotificationID  uuid.UUID       `json:"notification_id"`
+	FarmID          uuid.UUID       `json:"farm_id"`
+	UserID          uuid.UUID       `json:"user_id"`
+	UserEmail       string          `json:"user_email"`
+	FarmName        string          `json:"farm_name"`
+	Location        Location        `json:"location"`
+	Timestamp       time.Time       `json:"timestamp"`
+	Alerts          []WeatherAlert  `json:"alerts"`
+	ForecastSummary ForecastSummary `json:"forecast_summary"`
 }
 
 type Location struct {

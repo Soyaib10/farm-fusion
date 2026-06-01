@@ -25,4 +25,3 @@ type WeatherResponse struct {
 	Value     float64   `json:"value"`
 	IsEnabled bool      `json:"is_enabled"`
 }
-

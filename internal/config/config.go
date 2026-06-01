@@ -25,6 +25,7 @@ type Config struct {
 }
 
 type RedisConfig struct {
+	URL      string
 	Addr     string
 	Password string
 	DB       int
@@ -82,7 +83,7 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return &Config{
-		ServerPort:  getEnv("SERVER_PORT", "8080"),
+		ServerPort:  getEnv("SERVER_PORT", getEnv("PORT", "8080")),
 		DatabaseURL: dbURL,
 		DBPool: DBPoolConfig{
 			MaxConns:          maxConns,
@@ -97,6 +98,7 @@ func LoadConfig() (*Config, error) {
 		RefreshTokenDuration: getEnvDuration("REFRESH_TOKEN_DURATION", 7*24*time.Hour),
 		MLServiceURL:         getEnv("ML_SERVICE_URL", "http://localhost:8000"),
 		Redis: RedisConfig{
+			URL:      getEnv("REDIS_URL", ""),
 			Addr:     getEnv("REDIS_ADDR", "localhost:6379"),
 			Password: getEnv("REDIS_PASSWORD", ""),
 			DB:       getEnvInt("REDIS_DB", 0),
@@ -114,7 +116,7 @@ func LoadConfig() (*Config, error) {
 			Host:     getEnv("SMTP_HOST", "smtp.gmail.com"),
 			Port:     getEnvInt("SMTP_PORT", 587),
 			User:     getEnv("SMTP_USER", ""),
-			Password: getEnv("SMTP_PASSWORD", ""),
+			Password: getEnv("SMTP_PASSWORD", getEnv("SMTP_PASS", "")),
 			From:     getEnv("SMTP_FROM", "noreply@farmfusion.com"),
 		},
 	}, nil

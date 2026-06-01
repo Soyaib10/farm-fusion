@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -16,15 +17,24 @@ import (
 type ForecastCache struct {
 	client *redis.Client
 	ttl    time.Duration
-	logger *logger.Logger
 }
 
 func NewForecastCache(cfg *config.Config, logger *logger.Logger) (notification.ForecastRepository, error) {
-	client := redis.NewClient(&redis.Options{
+	options := &redis.Options{
 		Addr:     cfg.Redis.Addr,
 		Password: cfg.Redis.Password,
 		DB:       cfg.Redis.DB,
-	})
+	}
+
+	if cfg.Redis.URL != "" {
+		parsedOptions, err := redis.ParseURL(cfg.Redis.URL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid redis url: %w", err)
+		}
+		options = parsedOptions
+	}
+
+	client := redis.NewClient(options)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -38,14 +48,16 @@ func NewForecastCache(cfg *config.Config, logger *logger.Logger) (notification.F
 	return &ForecastCache{
 		client: client,
 		ttl:    time.Duration(cfg.Weather.CacheTTL) * time.Second,
-		logger: logger,
 	}, nil
 }
 
 func (c *ForecastCache) Get(ctx context.Context, locationKey string) (*domain.WeatherForecast, error) {
-	data, err := c.client.Get(ctx, locationKey).Bytes()
+	data, err := c.client.Get(ctx, forecastCacheKey(locationKey)).Bytes()
 	if err != nil {
-		return nil, err // caller checks redis.Nil
+		if errors.Is(err, redis.Nil) {
+			return nil, notification.ErrCacheMiss
+		}
+		return nil, fmt.Errorf("redis get: %w", err)
 	}
 
 	var forecast domain.WeatherForecast
@@ -62,5 +74,13 @@ func (c *ForecastCache) Set(ctx context.Context, forecast *domain.WeatherForecas
 		return fmt.Errorf("marshal forecast: %w", err)
 	}
 
-	return c.client.Set(ctx, forecast.LocationKey, data, c.ttl).Err()
+	return c.client.Set(ctx, forecastCacheKey(forecast.LocationKey), data, c.ttl).Err()
+}
+
+func (c *ForecastCache) Close() error {
+	return c.client.Close()
+}
+
+func forecastCacheKey(locationKey string) string {
+	return "forecast:" + locationKey
 }

@@ -36,10 +36,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cmd := farm.UpsertFarmCommand {
-		Name: &input.Name,
+	cmd := farm.UpsertFarmCommand{
+		Name:      &input.Name,
 		Longitude: &input.Longitude,
-		Latitude: &input.Latitude,
+		Latitude:  &input.Latitude,
 	}
 
 	newFarm, err := h.usecase.Create(r.Context(), userID, cmd)
@@ -49,10 +49,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := FarmResponse{
-		ID:        newFarm.ID,
-		Name:      newFarm.Name,
-		Latitude:  newFarm.Latitude,
-		Longitude: newFarm.Longitude,
+		ID:          newFarm.ID,
+		Name:        newFarm.Name,
+		Latitude:    newFarm.Latitude,
+		Longitude:   newFarm.Longitude,
+		LocationKey: newFarm.LocationKey,
 	}
 
 	if err := h.app.WriteJSON(w, http.StatusCreated, app.Envelope{"farm": response}, nil); err != nil {
@@ -80,10 +81,11 @@ func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := FarmResponse{
-		ID:        farm.ID,
-		Name:      farm.Name,
-		Latitude:  farm.Latitude,
-		Longitude: farm.Longitude,
+		ID:          farm.ID,
+		Name:        farm.Name,
+		Latitude:    farm.Latitude,
+		Longitude:   farm.Longitude,
+		LocationKey: farm.LocationKey,
 	}
 
 	if err := h.app.WriteJSON(w, http.StatusOK, app.Envelope{"farm": response}, nil); err != nil {
@@ -107,10 +109,11 @@ func (h *Handler) ListByUserID(w http.ResponseWriter, r *http.Request) {
 	farmResponses := make([]FarmResponse, len(farms))
 	for i, farm := range farms {
 		farmResponses[i] = FarmResponse{
-			ID:        farm.ID,
-			Name:      farm.Name,
-			Latitude:  farm.Latitude,
-			Longitude: farm.Longitude,
+			ID:          farm.ID,
+			Name:        farm.Name,
+			Latitude:    farm.Latitude,
+			Longitude:   farm.Longitude,
+			LocationKey: farm.LocationKey,
 		}
 	}
 
@@ -138,10 +141,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cmd := farm.UpsertFarmCommand {
-		Name: &input.Name,
+	cmd := farm.UpsertFarmCommand{
+		Name:      &input.Name,
 		Longitude: &input.Longitude,
-		Latitude: &input.Latitude,
+		Latitude:  &input.Latitude,
 	}
 
 	updatedFarm, err := h.usecase.Update(r.Context(), farmID, userID, cmd)
@@ -151,10 +154,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := FarmResponse{
-		ID:        updatedFarm.ID,
-		Name:      updatedFarm.Name,
-		Latitude:  updatedFarm.Latitude,
-		Longitude: updatedFarm.Longitude,
+		ID:          updatedFarm.ID,
+		Name:        updatedFarm.Name,
+		Latitude:    updatedFarm.Latitude,
+		Longitude:   updatedFarm.Longitude,
+		LocationKey: updatedFarm.LocationKey,
 	}
 
 	if err := h.app.WriteJSON(w, http.StatusOK, app.Envelope{"farm": response}, nil); err != nil {

@@ -8,7 +8,7 @@ CREATE INDEX idx_farms_location_key ON farms(location_key);
 UPDATE farms 
 SET location_key = CONCAT(
     ROUND(latitude::numeric, 2)::text, 
-    ',', 
+    '_', 
     ROUND(longitude::numeric, 2)::text
 );
 

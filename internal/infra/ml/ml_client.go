@@ -64,7 +64,7 @@ func (c *MLClient) CropRecommendation(ctx context.Context, cmd recommendation.Cr
 	}
 
 	var result struct {
-		Crop         string `json:"crop"`
+		Crop         string  `json:"crop"`
 		Confidence   float64 `json:"confidence"`
 		Alternatives []struct {
 			Crop       string  `json:"crop"`
@@ -133,7 +133,7 @@ func (c *MLClient) FertilizerRecommendation(ctx context.Context, cmd recommendat
 	}
 
 	var result struct {
-		Fertilizer   string `json:"fertilizer"`
+		Fertilizer   string  `json:"fertilizer"`
 		Confidence   float64 `json:"confidence"`
 		Alternatives []struct {
 			Fertilizer string  `json:"fertilizer"`
