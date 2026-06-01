@@ -4,6 +4,7 @@
 *.txt
 *.json
 *.sh
+!run.sh
 
 
 # Binaries for programs and plugins
