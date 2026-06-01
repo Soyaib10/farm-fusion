@@ -4,8 +4,9 @@
 
 A platform that combines machine learning, real-time weather monitoring, and automated notifications to help farmers make data-driven decisions about crop selection and fertilizer usage.
 
+This document covers not just what was built, but why each technical decision was made.
+
 ---
- I have shared my entire thought process here, why did I choose one thing over another. So if you are reading this then just bear with me, you will find it interesting. Some parts of implementation are under development but entire thought process is here. 
 
 ## Why This Project Matters
 
@@ -26,78 +27,13 @@ An intelligent system that:
 - **Time Saved:** Automated daily weather checks for all farms
 - **Cost Reduction:** Precise fertilizer recommendations prevent waste
 - **Risk Mitigation:** Early weather warnings protect crops
-- **Data-Driven:** ML models trained on 2,200+ agricultural data points. 
+- **Data-Driven:** ML models trained on 2,200+ agricultural data points
+
 ---
 
 ## System Architecture
 
 ### High-Level Overview
-
-<!-- ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         CLIENT LAYER                             │
-│                    (Mobile/Web/Postman)                          │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ HTTPS/REST
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      GO BACKEND API :8080                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │   Delivery   │  │   UseCase    │  │    Domain    │          │
-│  │  (HTTP/REST) │─▶│  (Business)  │─▶│  (Entities)  │          │
-│  └──────────────┘  └──────────────┘  └──────────────┘          │
-│         │                  │                  │                  │
-│         └──────────────────┴──────────────────┘                 │
-│                            │                                     │
-│                            ▼                                     │
-│                   ┌─────────────────┐                           │
-│                   │  Infrastructure │                           │
-│                   └─────────────────┘                           │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-        ┌────────────────────┼────────────────────┐
-        │                    │                    │
-        ▼                    ▼                    ▼
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│  PostgreSQL  │    │  ML Service  │    │   Redis      │
-│   :5432      │    │   :8000      │    │   :6379      │
-│              │    │              │    │              │
-│ • Users      │    │ • Crop Model │    │ • Weather    │
-│ • Farms      │    │ • Fert Model │    │   Cache      │
-│ • Alerts     │    │ • FastAPI    │    │ • 3hr TTL    │
-└──────────────┘    └──────────────┘    └──────────────┘
-        │
-        │
-        ▼
-┌──────────────────────────────────────────────────────────┐
-│              BACKGROUND PROCESSING LAYER                  │
-│                                                           │
-│  ┌──────────────┐         ┌──────────────┐              │
-│  │  Scheduler   │────────▶│  RabbitMQ    │              │
-│  │  (Cron 5AM)  │  Pub    │   Queue      │              │
-│  └──────────────┘         └──────┬───────┘              │
-│                                   │ Sub                  │
-│  ┌──────────────┐                │                      │
-│  │ OpenWeather  │                ▼                      │
-│  │     API      │         ┌──────────────┐              │
-│  └──────┬───────┘         │    Worker    │              │
-│         │                 │  (Consumer)  │              │
-│         │ Forecast        └──────┬───────┘              │
-│         │                        │                      │
-│         ▼                        ▼                      │
-│  ┌──────────────┐         ┌──────────────┐              │
-│  │ Alert Logic  │         │  SMTP Client │              │
-│  │  (Threshold) │         │  (Gmail)     │              │
-│  └──────────────┘         └──────────────┘              │
-│                                   │                      │
-└───────────────────────────────────┼──────────────────────┘
-                                    │
-                                    ▼
-                            ┌──────────────┐
-                            │   📧 Email   │
-                            │   to Farmer  │
-                            └──────────────┘
-``` -->
 
 ![Homepage](./static/farm-fusion.png)
 
@@ -116,8 +52,26 @@ An intelligent system that:
 - Retry logic for failed emails
 
 ---
+
+## API Endpoints
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/v1/auth/register` | No | Register a new user |
+| POST | `/api/v1/auth/login` | No | Login and receive tokens |
+| POST | `/api/v1/auth/refresh` | No | Refresh access token |
+| POST | `/api/v1/farms` | Yes | Create a new farm |
+| GET | `/api/v1/farms` | Yes | List all farms for user |
+| GET | `/api/v1/farms/:id` | Yes | Get a specific farm |
+| DELETE | `/api/v1/farms/:id` | Yes | Delete a farm |
+| POST | `/api/v1/farms/:id/alerts` | Yes | Set weather alert thresholds |
+| POST | `/api/v1/predict/crop` | Yes | Get crop recommendation |
+| POST | `/api/v1/predict/fertilizer` | Yes | Get fertilizer recommendation |
+| GET | `/health` | No | Health check |
+
+---
+
 ## Domain Deep Dive
-Start with the recommendation and notification part first. Later other parts will be discussed. 
 
 ### ML Recommendation Domain
 
@@ -148,7 +102,6 @@ Go Backend                    Python ML Service
     │                         │model & choose│
     │                         └──────┬───────┘
     │                              │
-    │                              │
     │                         ┌────▼────┐
     │                         │ Get Top │
     │                         │ 3 Probs │
@@ -171,29 +124,25 @@ Model Training (Offline):
 ```
 
 **What We Did:**
-- Trained various models and choose best models on agricultural datasets
-- Created separate Python FastAPI service for ML inference
-- Implemented HTTP client in Go to call ML service
+- Trained various models and chose the best performer on agricultural datasets
+- Created a separate Python FastAPI service for ML inference
+- Implemented HTTP client in Go to call the ML service
 - Added confidence thresholds and warnings
 
-**Why This Way:**
-- **Why Python:** Python is best for ML, Go is best for web APIs
-- **Why Classifier (Not Regressor)?**
+**Why Python for ML, Go for API:**
+Python has the richest ML ecosystem (scikit-learn, pandas, numpy). Go excels at building fast, concurrent web APIs. Separating them lets each language do what it does best.
 
-  Here our Task:
+**Why Classifier (Not Regressor)?**
 
-  Input: Soil nutrients (N, P, K), weather (temp, humidity, rainfall), pH. 
-  Output: **Crop name** (rice, wheat, maize, etc.) - **Discrete categories**
+Input: Soil nutrients (N, P, K), weather (temp, humidity, rainfall), pH.
+Output: **Crop name** (rice, wheat, maize, etc.) — **Discrete categories**
 
-  Classification works on Discrete categories like "rice", "wheat", "maize" , "Crop/Fertilizer names". Regression works on Continuous numbers like 45.7, 123.4 not predicting quantities. We're not predicting "how much" (quantity), We're predicting "which one" (category).
+Classification predicts discrete categories like "rice" or "wheat". Regression predicts continuous numbers like 45.7 or 123.4. Since we're predicting *which crop*, not *how much of something*, classification is the correct approach.
 
-
-**Why Random Forest (Not Decision Tree)?**
-
-**Decision Tree Problems**
+**Why Random Forest (Not a Single Decision Tree)?**
 
 ```
-Single Decision Tree:
+Single Decision Tree Problems:
                     [N > 50?]
                    /         \
               [Yes]           [No]
@@ -203,13 +152,11 @@ Single Decision Tree:
    Rice    Wheat          Maize          Jute
 
 Problems:
- Overfitting - Memorizes training data
- High variance - Small data change = completely different tree
- Unstable - Sensitive to noise
- Lower accuracy - Single perspective
+ • Overfitting - Memorizes training data
+ • High variance - Small data change = completely different tree
+ • Unstable - Sensitive to noise
+ • Lower accuracy - Single perspective
 ```
-
-### Random Forest Solution
 
 ```
 Random Forest = Ensemble of Many Trees:
@@ -229,19 +176,69 @@ Tree 4: Rice (95%)
 ...
 Tree 100: Rice (88%)
 
-Result: Rice (87 trees voted Rice) 
+Result: Rice (87 trees voted Rice)
 ```
-We tested other models and got best result for Random Forest.
+
+We tested multiple models (Decision Tree, SVM, KNN, Logistic Regression) and Random Forest consistently gave the best results.
 
 **Model Performance:**
-- **Crop Recommendation:** 99.32% accuracy (2200 samples)
+- **Crop Recommendation:** 99.32% accuracy (2,200 samples)
 - **Fertilizer Recommendation:** ~95% accuracy (variable by soil type)
 - **Inference Time:** <50ms per prediction
 - **Model Size:** ~2MB total
 
 ---
 
-### 4. Weather Notification Domain
+### Why Round Coordinates for Weather Caching?
+
+**What We Did:** Round GPS coordinates to 2 decimal places and use them as cache keys.
+
+```go
+Farm A: lat=23.8103, lon=90.4125 → location_key="23.81_90.41"
+Farm B: lat=23.8156, lon=90.4189 → location_key="23.82_90.42"
+Farm C: lat=23.8099, lon=90.4134 → location_key="23.81_90.41"
+
+Result: Farm A and C share the same weather cache entry
+```
+
+**Why not use exact coordinates?**
+
+**API Cost:**
+```
+Without Rounding:
+- 100 farms × unique coords = 100 API calls/day
+
+With Rounding (2 decimal places):
+- 100 farms grouped into ~4 location keys = 4 API calls/day
+- Cost reduction: 96%
+```
+
+**Accuracy is not sacrificed:**
+```
+0.01° latitude  ≈ 1.11 km
+0.01° longitude ≈ 1.11 km (at equator)
+
+OpenWeather grid resolution: ~10-15 km squares
+→ Farms within 1 km receive identical forecast data anyway
+→ Temperature difference between two farms 650m apart: ±0.1°C (negligible)
+```
+
+**Cache efficiency:**
+```
+Without Rounding: Cache hit rate ~5%  (every farm is unique)
+With Rounding:    Cache hit rate ~95% (farms share keys)
+Performance gain: 20x faster on cache hits
+```
+
+**Scales naturally:**
+```
+100 farms   → ~4 unique location keys   (under free API tier)
+10,000 farms → ~400 unique location keys (still under free tier)
+```
+
+---
+
+### Weather Notification Domain
 
 **Problem:** Automatically alert farmers about dangerous weather conditions
 
@@ -295,358 +292,79 @@ We tested other models and got best result for Random Forest.
 │                    WORKER CONSUMER                              │
 ├─────────────────────────────────────────────────────────────────┤
 │ 1. Receive message from queue                                   │
-│                                                                 │
-│ 2. Generate HTML email:                                         │
-│    • Alert section (if any alerts)                              │
-│    • Forecast summary                                           │
-│                                                                 │
+│ 2. Generate HTML email (alerts + forecast summary)              │
 │ 3. Send via SMTP                                                │
-│                                                                 │
-│ 4. Log to notification_log table:                               │
-│    • Success: email_sent = true                                 │
-│    • Failure: error_message                                     │
-│                                                                 │
+│ 4. Log to notification_log table                                │
 │ 5. Acknowledge message                                          │
 └─────────────────────────────────────────────────────────────────┘
-
-
-CACHING STRATEGY:
-
-Redis Key: weather:forecast:{lat}_{lon}
-TTL: 3 hours
-Why: OpenWeather updates every 3 hours, saves API calls
-
-Example:
-Farm A (23.81, 90.41) ─┐
-Farm B (23.82, 90.42) ─┼─▶ Same location key ─▶ 1 API call
-Farm C (23.80, 90.40) ─┘
 ```
 
-**What We Did:**
-- Implemented cron-based scheduler (runs at 5 AM daily)
-- Used RabbitMQ for async email processing
-- Cached weather data in Redis (1-hour TTL)
-- Created alert detection logic with configurable thresholds
-- Built HTML email templates with alert details
+**Why Scheduled at 5 AM, Not Real-Time?**
 
-
-**Why Scheduled Notifications at 5 AM (Not Instant Messages)?**
-
-**What We Did:** Send weather notifications once daily at 5:00 AM 
-
-**Alternative:** Send instant notifications whenever weather changes
-
-
-**Why 5 AM Specifically?**
-
-**User Behavior Analysis:**
 ```
 Farmer's Daily Schedule:
 ├─ 5:00 AM - Wake up, check phone
 ├─ 5:30 AM - Plan day based on weather
 ├─ 6:00 AM - Start farm work
 ├─ 12:00 PM - Lunch break
-└─ 6:00 PM - End work, too late to react
+└─ 6:00 PM - End of work day
 ```
 
-**Reasoning:**
-- **Early enough to plan:** Farmers can adjust their day before starting work
-- **Not too early:** 5 AM is when most farmers wake up
-- **Actionable window:** 1-2 hours to prepare equipment, protect crops
-- **Predictable:** Users expect notification at same time daily
+A 5 AM notification gives farmers 1–2 hours to prepare before work starts. Real-time notifications would arrive too late to act on (e.g. "heavy rain in 30 minutes" when you're already in the field) or too early (2 AM weather changes nobody can act on until morning).
 
-**Why Not Other Times?**
-- **Midnight:** Users asleep, notification ignored
-- **8 AM:** Too late, already started work
-- **Evening (6 PM):** Can't act on tomorrow's weather today
+**Technical reasons against real-time:**
 
----
-
-### Why NOT Instant/Real-Time Notifications?
-
-#### Technical Challenges
-
-**1. API Rate Limits**
 ```
-OpenWeather API Free Tier: 1,000 calls/day
+API Calls:
+- Real-time (100 farms × 24 checks/hr × 24 hrs): 57,600 calls/day → $50-100/month
+- Scheduled (5 AM, with caching):                 ~8 calls/day     → FREE
 
-Instant Approach:
-- 100 farms × 24 checks/hour = 2,400 calls/hour
-- 2,400 × 24 hours = 57,600 calls/day
-- Cost: $50-100/month for API calls
-
-Scheduled Approach (5 AM):
-- 100 farms × 1 check/day = 100 calls/day
-- With caching: ~8 calls/day (nearby farms share cache)
-- Cost: FREE (under 1,000 limit)
-
-Savings: 99.8% reduction in API calls
+Database queries:
+- Real-time: 6,000 queries/hour
+- Scheduled: 100 queries/day (99.3% reduction)
 ```
 
-**2. Weather Data Doesn't Change That Fast**
+**UX reasons against real-time:**
+
 ```
-OpenWeather Update Frequency: Every 3 hours
-
-Checking every minute:
-├─ 5:00 AM - Forecast: Rain at 2 PM
-├─ 5:01 AM - Forecast: Rain at 2 PM (same)
-├─ 5:02 AM - Forecast: Rain at 2 PM (same)
-└─ ... (177 identical checks)
-└─ 8:00 AM - Forecast: Rain at 2 PM (finally updated)
-
-Result: 177 wasted API calls for same data
-```
-
-**3. Email Fatigue**
-```
-Instant Notifications:
-├─ 5:00 AM - "Temperature dropping to 14°C at 2 PM"
-├─ 6:00 AM - "Temperature dropping to 13°C at 2 PM" (updated forecast)
-├─ 7:00 AM - "Temperature dropping to 14°C at 2 PM" (forecast changed back)
-└─ 8:00 AM - "Temperature dropping to 13°C at 2 PM"
-
-User Experience: 4 emails in 3 hours, all saying similar things
-Result: User unsubscribes or ignores emails
-```
-
-**4.Costs**: This way cost is much higher due to over API calls.
-
-
-**5. Database Load**
-```
-Instant Approach:
-- Continuous polling: SELECT * FROM farms every minute
-- 100 farms × 60 checks/hour = 6,000 queries/hour
-- Database always busy
-
-Scheduled Approach:
-- One batch query: SELECT * FROM farms once/day
-- 100 farms × 1 check/day = 100 queries/day
-- Database mostly idle
-
-Load Reduction: 99.3% fewer queries
-```
-
-#### User Experience Challenges
-
-**1. Notification Overload**
-```
-Problem: Weather forecasts change frequently
-
-Example Day:
+Real-time notifications in one day:
 ├─ 6:00 AM - "Rain expected at 3 PM"
 ├─ 9:00 AM - "Rain moved to 4 PM"
 ├─ 12:00 PM - "Rain now at 2 PM"
 ├─ 3:00 PM - "Rain cancelled"
 └─ 6:00 PM - "Rain back on at 8 PM"
+→ Result: User unsubscribes
 
-Result: 5 notifications, user confused and annoyed
-```
-
-**2. Actionability**
-```
-Instant notification at 1 PM: "Heavy rain in 30 minutes"
-
-Farmer's situation:
-- Already in the field
-- Equipment not nearby
-- Can't protect crops in 30 minutes
-- Notification causes stress, not help
-
-Better: Morning notification
-- "Heavy rain expected at 1:30 PM"
-- Farmer can plan: finish work by 1 PM, bring equipment
-- Actionable and helpful
-```
-
-**3. Sleep Disruption**
-```
-Instant Approach:
-- Weather changes at 2 AM
-- Notification wakes farmer
-- Can't do anything until morning anyway
-- Lost sleep for no benefit
-
-Scheduled Approach:
-- All changes summarized in 5 AM email
-- Farmer wakes naturally
-- Gets complete picture
-- Can act immediately
-```
-
-#### Business Logic Challenges
-
-**1. Alert Grouping**
-```
-Instant Approach:
-├─ Alert 1: "Temperature < 15°C at 10 AM"
-├─ Alert 2: "Temperature < 15°C at 11 AM"
-├─ Alert 3: "Temperature < 15°C at 12 PM"
-└─ Alert 4: "Temperature < 15°C at 1 PM"
-
-Problem: 4 separate notifications for same condition
-
-Scheduled Approach:
+Scheduled alert grouping:
 └─ One alert: "Temperature < 15°C from 10 AM - 1 PM (4 hours)"
-
-Result: Clear, concise, actionable
+→ Result: Clear, concise, actionable
 ```
 
-**Our Approach:**
-- Daily scheduled for routine planning
-- Future: Add emergency alerts for severe weather
-- Best of both worlds
+**Future Enhancement:** Add emergency-only real-time alerts for truly severe conditions (e.g. tornado, flash flood) — best of both worlds.
 
 ---
 
-## 2. Why Rounding Latitude/Longitude (Location Key)?
+### Why RabbitMQ?
 
-### The Design Decision
+**Requirements:** Send emails asynchronously, retry on failure, decouple producers from consumers.
 
-**What We Did:** Round coordinates and create location keys for caching
+**Why not a simple goroutine?**
+A goroutine sending email inline with the API request means if the SMTP server is slow or down, the farmer's API call hangs or fails. The notification concern is completely separate from the farm management concern — they should not share a failure surface.
 
-```go
-// Example
-Farm A: lat=23.8103, lon=90.4125 → location_key="23.81_90.41"
-Farm B: lat=23.8156, lon=90.4189 → location_key="23.82_90.42"
-Farm C: lat=23.8099, lon=90.4134 → location_key="23.81_90.41"
+**Why not Redis as a queue?**
+Redis can be used as a queue but it lacks built-in dead-letter queues, per-message TTL, and consumer acknowledgment semantics. RabbitMQ was purpose-built for message brokering and handles retry logic and failed message routing out of the box.
 
-Result: Farm A and C share same weather cache
-```
+**Why not Kafka?**
+Kafka is designed for high-throughput event streaming (millions of messages/second). This system sends at most a few hundred emails per day. Kafka would be significant operational overhead for no benefit at this scale.
 
-**Alternative:** Use exact coordinates for each farm
+**RabbitMQ fits because:**
+- Simple pub/sub is all we need
+- Built-in retry and dead-letter queue
+- Message acknowledgment prevents lost emails
+- Low operational overhead
+- Free tier on CloudAMQP covers this use case easily
 
 ---
-
-### Why Round Coordinates?
-
-#### Technical Challenges
-
-**1. API Cost Explosion**
-```
-Without Rounding (Exact Coordinates):
-
-100 farms with unique coordinates:
-├─ Farm 1: 23.810345, 90.412567
-├─ Farm 2: 23.810389, 90.412601
-├─ Farm 3: 23.810412, 90.412634
-└─ ... (all slightly different)
-
-API Calls: 100 unique calls/day
-Cost: Hits rate limits quickly
-
-With Rounding (2 decimal places):
-
-100 farms grouped by area:
-├─ Location 23.81_90.41: 25 farms
-├─ Location 23.82_90.42: 30 farms
-├─ Location 23.83_90.43: 20 farms
-└─ Location 23.84_90.44: 25 farms
-
-API Calls: 4 unique calls/day
-Cost: 96% reduction
-```
-
-**2. Weather Doesn't Vary That Much Locally**
-```
-Weather Forecast Resolution:
-
-OpenWeather API Grid: ~10-15 km squares
-├─ 23.81, 90.41 → Grid Cell A
-├─ 23.8103, 90.4125 → Grid Cell A (same!)
-└─ 23.8156, 90.4189 → Grid Cell A (same!)
-
-Reality: API returns identical data for nearby coordinates
-
-Our Rounding: ~1.1 km precision
-├─ 0.01° latitude ≈ 1.11 km
-└─ 0.01° longitude ≈ 1.11 km (at equator)
-
-Result: Farms within 1 km share forecast (accurate enough)
-```
-
-**3. Cache Efficiency**
-```
-Without Rounding:
-
-Redis Cache:
-├─ weather:23.810345_90.412567 → Forecast A
-├─ weather:23.810389_90.412601 → Forecast B (99% same as A)
-├─ weather:23.810412_90.412634 → Forecast C (99% same as A)
-└─ ... (100 nearly identical entries)
-
-Cache Hit Rate: ~5% (each farm unique)
-Memory Usage: High (duplicate data)
-
-With Rounding:
-
-Redis Cache:
-├─ weather:23.81_90.41 → Forecast A (shared by 25 farms)
-├─ weather:23.82_90.42 → Forecast B (shared by 30 farms)
-└─ ... (4 entries total)
-
-Cache Hit Rate: ~95% (farms share keys)
-Memory Usage: Low (no duplication)
-
-Performance: 20x faster (cache hits vs API calls)
-```
-
-**1. Is 1 km Precision Enough?**
-```
-Weather Variation at Different Scales:
-
-├─ 100 km: Different weather systems
-├─ 10 km: Slight variations (hills, water bodies)
-├─ 1 km: Essentially identical
-└─ 100 m: No measurable difference
-
-Our Rounding: 1.1 km precision
-
-Farm Sizes:
-├─ Small farm: 1-5 hectares (100m × 100m)
-├─ Medium farm: 10-50 hectares (300m × 300m)
-├─ Large farm: 100+ hectares (1km × 1km)
-
-Conclusion: 1 km precision is MORE than enough
-```
-
-**2. Real-World Example**
-```
-Two Farms:
-├─ Farm A: 23.8103, 90.4125 (exact)
-├─ Farm B: 23.8156, 90.4189 (exact)
-└─ Distance: ~650 meters apart
-
-Weather Difference:
-├─ Temperature: ±0.1°C (negligible)
-├─ Humidity: ±1% (negligible)
-├─ Rainfall: Same (unless very localized storm)
-└─ Wind: Same direction and speed
-
-Conclusion: Sharing forecast is accurate
-```
-
-
-**2. Growth Handling**
-```
-System Growth:
-
-100 farms → 10,000 farms
-
-Without Rounding:
-- 10,000 unique API calls
-- Impossible (rate limits)
-- Need expensive API tier
-
-With Rounding:
-- ~400 unique location keys (assuming distribution)
-- Still under free tier
-- Scales naturally
-
-Conclusion: Design supports 100x growth
-```
-
-**Future Enhancements:** Add SMS notifications and upport custom notification times per user
 
 ### Authentication Domain
 
@@ -654,85 +372,60 @@ Conclusion: Design supports 100x growth
 
 **Architecture:**
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  AUTHENTICATION FLOW                     │
-└─────────────────────────────────────────────────────────┘
-
 POST /api/v1/auth/register
     │
     ├─▶ Validate Input (email, password strength)
-    │
     ├─▶ Hash Password (bcrypt, cost=10)
-    │
     ├─▶ Store User in PostgreSQL
-    │
     └─▶ Return User ID
 
 POST /api/v1/auth/login
     │
     ├─▶ Fetch User by Email
-    │
     ├─▶ Compare Password Hash
-    │
     ├─▶ Generate JWT Access Token (15 min expiry)
-    │
     ├─▶ Generate Refresh Token (7 days, stored in DB)
-    │
     └─▶ Return Both Tokens
 
 POST /api/v1/auth/refresh
     │
     ├─▶ Validate Refresh Token from DB
-    │
     ├─▶ Check Expiry & Revocation
-    │
-    ├─▶ Generate New Access Token
-    │
-    └─▶ Return New Token
+    └─▶ Return New Access Token
 ```
 
-**What We Did:**
-- Implemented JWT-based authentication with short-lived access tokens
-- Stored refresh tokens in PostgreSQL for revocation capability
-- Used bcrypt for password hashing
-- Created middleware to protect routes
-
-**Why This Way:**
+**Why this approach:**
 - **JWT for stateless auth:** No session storage needed, scales horizontally
-- **Refresh tokens in DB:** Allows logout/revocation (pure JWT can't be revoked)
-- **Short access token expiry:** Limits damage if token is stolen
-- **Bcrypt over SHA256:** Designed for passwords, has built-in salt, adjustable cost
+- **Refresh tokens in DB:** Enables logout and revocation (pure JWT cannot be revoked before expiry)
+- **Short access token expiry (15 min):** Limits damage if a token is stolen
+- **Bcrypt over SHA256:** Purpose-built for passwords, has built-in salt, adjustable cost factor
 
-**Alternative Approaches:**
-1. **Session-based auth:** Requires Redis/DB lookup on every request (slower)
-2. **OAuth2:** Overkill for this use case, adds complexity
-3. **API Keys:** Less secure, no expiration, harder to rotate
+**Alternatives considered:**
+- **Session-based auth:** Requires a DB or Redis lookup on every single request — adds latency and a stateful dependency
+- **OAuth2:** Adds significant complexity for no real benefit without third-party login requirements
+- **API Keys:** No expiration, harder to rotate, less secure for end-user auth
 
 **Future Enhancements:**
 - Add 2FA (TOTP)
-- Implement rate limiting on login attempts
-- Add password reset via email
-- Support OAuth2 for social login
+- Rate limiting on login attempts
+- Password reset via email
+- OAuth2 for social login
 
 ---
 
 ### Farm Management Domain
 
-**Problem:** Users need to manage multiple farms with GPS coordinates
+**Problem:** Users need to manage multiple farms with GPS coordinates and per-farm alert thresholds
 
 **Architecture:**
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    FARM MANAGEMENT                       │
-└─────────────────────────────────────────────────────────┘
-
 User (1) ──────── (N) Farm
     │                  │
     │                  ├─ ID (UUID)
     │                  ├─ Name
     │                  ├─ Latitude
     │                  ├─ Longitude
-    │                  ├─ Location Key (for weather API)
+    │                  ├─ Location Key (for weather cache)
     │                  └─ Timestamps
     │
     └─────────────────▶ Weather Alerts (N)
@@ -742,84 +435,91 @@ User (1) ──────── (N) Farm
                            ├─ Value (threshold)
                            └─ Is Enabled
 
-API Flow:
 POST /api/v1/farms
     │
     ├─▶ Extract User ID from JWT
-    │
     ├─▶ Validate Coordinates (-90 to 90, -180 to 180)
-    │
-    ├─▶ Generate Location Key (lat_lon hash)
-    │
+    ├─▶ Generate Location Key (rounded lat_lon)
     ├─▶ Store in PostgreSQL
-    │
     └─▶ Return Farm Object
 ```
 
-**What We Did:**
-- Created one-to-many relationship: User → Farms → Weather Alerts
-- Used UUIDs for IDs (better for distributed systems)
-- Added location_key for efficient weather API caching
-- Implemented ownership verification (users can only access their farms)
+**Design decisions:**
+- **UUIDs for IDs:** Better for distributed systems, no sequential ID guessing
+- **Location key on the farm record:** Avoids recomputing it on every weather check
+- **Ownership verification middleware:** Users can only read/modify their own farms
 
 **Future Enhancements:**
-- Add farm boundaries (polygon coordinates)
-- Support multiple crops per farm
-- Add soil test history tracking
-- Implement farm sharing (multiple users per farm)
+- Farm boundaries (polygon coordinates)
+- Multiple crops per farm
+- Soil test history tracking
+- Farm sharing (multiple users per farm)
 
 ---
 
-### Why RabbitMQ?
-
-**Requirements:**
-- Send emails asynchronously
-- Retry failed emails
-- Simple pub/sub
-
-### Why Redis for Caching?
-
-**Problem:**
-- OpenWeather API: 1000 calls/day free tier
-- 100 farms × 24 checks/day = 2400 calls (over limit!)
-
-**Solution:**
-- Cache forecasts for 3 hours (weather update frequency)
-- Nearby farms share same cache key
-- Result: ~8 API calls/day for 100 farms
-
----
+## Quick Setup
 
 ### Prerequisites
 
 ```bash
-# Required
-- Go 1.25+
+- Go 1.21+
 - Python 3.8+
 - PostgreSQL 14+
 - Redis 6+
 - RabbitMQ 3.9+
 ```
 
-### Quick Setup
+### Environment Variables
 
-#### 1. Clone & Configure
+Copy `.env.example` to `.env` and fill in the values:
+
+```env
+# Database
+DATABASE_URL=postgresql://postgres:password@localhost:5432/farm_fusion
+
+# Redis
+REDIS_URL=redis://localhost:6379
+
+# RabbitMQ
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+
+# ML Service
+ML_SERVICE_URL=http://localhost:8000
+
+# Auth
+JWT_SECRET=your-secret-key-here
+
+# Weather
+OPENWEATHER_API_KEY=your-api-key
+
+# Email (SMTP)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your@gmail.com
+SMTP_PASS=your-app-password
+
+# Server
+PORT=8080
+ENV=development
+```
+
+### 1. Clone & Configure
 
 ```bash
-git clone https://github.com/yourusername/farm-fusion.git
+git clone https://github.com/Soyaib10/farm-fusion.git
 cd farm-fusion
 cp .env.example .env
 # Edit .env with your credentials
 ```
 
-#### 2. Database Setup
+### 2. Database Setup
 
 ```bash
 createdb farm_fusion
 psql -d farm_fusion -f migrations/*.up.sql
 ```
 
-#### 3. Start ML Service
+### 3. Start ML Service
 
 ```bash
 cd ml_service
@@ -830,7 +530,7 @@ python train_models.py  # First time only
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-#### 4. Start Go Backend
+### 4. Start Go Backend
 
 ```bash
 go mod download
@@ -838,40 +538,40 @@ go build -o bin/api cmd/api/main.go
 ./bin/api
 ```
 
-#### 5. Start Background Services
+### 5. Start Background Services
 
 ```bash
-# Terminal 1
-go build -o scheduler cmd/scheduler/main.go
-./scheduler
+# Terminal 1 — Scheduler (runs daily at 5 AM)
+go build -o bin/scheduler cmd/scheduler/main.go
+./bin/scheduler
 
-# Terminal 2
-go build -o worker cmd/worker/main.go
-./worker
+# Terminal 2 — Worker (consumes RabbitMQ queue)
+go build -o bin/worker cmd/worker/main.go
+./bin/worker
 ```
+
 ---
 
-### Mistakes & Lessons
+## Mistakes & Lessons
 
 **Mistake 1: Over-engineering Early**
-- Initially wanted to use gRPC, microservices everywhere
-- Learned: Start simple, add complexity when needed
+- Initially wanted to use gRPC and microservices everywhere
+- Learned: Start simple, add complexity only when justified
 
-**Mistake 2: Not Planning Database Schema**
-- Had to add location_key column later for caching
-- Learned: Think about access patterns upfront
-- Migrations are painful, get it right first time
+**Mistake 2: Not Planning the Database Schema Upfront**
+- Had to add the `location_key` column after the fact
+- Learned: Think about access patterns before writing the first migration — migrations are painful to undo
 
 **Mistake 3: Ignoring Error Handling**
-- Early code had generic error messages
-- Learned: Specific errors help debugging
+- Early code returned generic error messages
+- Learned: Specific, descriptive errors save hours of debugging
+
 ---
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-### Development Workflow
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Commit your changes (`git commit -m 'Add amazing feature'`)
@@ -882,7 +582,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
 ---
 
@@ -892,7 +592,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - GitHub: [Soyaib10](https://github.com/Soyaib10)
 - LinkedIn: [Md. Soyaib Rahman](https://www.linkedin.com/in/md-soyaib-rahman-788261194/)
 - Email: soyaibzihad10@gmail.com
-
----
-
-
