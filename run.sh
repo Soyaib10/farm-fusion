@@ -14,19 +14,19 @@ cleanup() {
   log "Shutting down..."
   kill "$API_PID" "$SCHEDULER_PID" "$WORKER_PID" "$ML_PID" 2>/dev/null || true
   wait 2>/dev/null
+  docker compose stop
 }
 trap cleanup EXIT INT TERM
 
-# ── 1. Check infrastructure ───────────────────────────────────────────────────
-log "Checking PostgreSQL..."
-pg_isready -d "$DATABASE_URL" -q || { echo "ERROR: PostgreSQL not running."; exit 1; }
+# ── 1. Start infrastructure via Docker ───────────────────────────────────────
+log "Starting infrastructure (postgres, redis, rabbitmq)..."
+docker compose up -d
 
-log "Checking Redis..."
-redis-cli -h "${REDIS_ADDR%%:*}" -p "${REDIS_ADDR##*:}" ping > /dev/null 2>&1 || { echo "ERROR: Redis not running."; exit 1; }
-
-log "Checking RabbitMQ..."
-curl -sf "http://guest:guest@localhost:15672/api/overview" > /dev/null 2>&1 || \
-  nc -z localhost 5672 2>/dev/null || { echo "ERROR: RabbitMQ not running."; exit 1; }
+log "Waiting for services to be ready..."
+until pg_isready -d "$DATABASE_URL" -q 2>/dev/null; do sleep 1; done
+until redis-cli -h "${REDIS_ADDR%%:*}" -p "${REDIS_ADDR##*:}" ping > /dev/null 2>&1; do sleep 1; done
+until nc -z localhost 5672 2>/dev/null; do sleep 1; done
+log "Infrastructure ready."
 
 # ── 2. Run migrations ─────────────────────────────────────────────────────────
 log "Running migrations..."
