@@ -36,6 +36,7 @@ type RabbitMQConfig struct {
 }
 
 type WeatherConfig struct {
+	BaseURL  string
 	APIKey   string
 	CacheTTL int
 }
@@ -105,6 +106,7 @@ func LoadConfig() (*Config, error) {
 			Queue: getEnv("RABBITMQ_QUEUE", "weather.notifications"),
 		},
 		Weather: WeatherConfig{
+			BaseURL:  getEnv("OPENWEATHER_BASE_URL", "https://api.openweathermap.org/data/2.5/forecast"),
 			APIKey:   getEnv("OPENWEATHER_API_KEY", ""),
 			CacheTTL: getEnvInt("WEATHER_CACHE_TTL", 10800),
 		},
