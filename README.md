@@ -55,19 +55,42 @@ An intelligent system that:
 
 ## API Endpoints
 
+### Main API (Go)
+
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | POST | `/api/v1/auth/register` | No | Register a new user |
 | POST | `/api/v1/auth/login` | No | Login and receive tokens |
 | POST | `/api/v1/auth/refresh` | No | Refresh access token |
+| POST | `/api/v1/auth/logout` | No | Revoke refresh token |
+| GET | `/api/v1/users/me` | Yes | Get current user profile |
+| GET | `/api/v1/users` | Yes | List all users |
+| GET | `/api/v1/users/{id}` | Yes | Get user by ID |
+| PATCH | `/api/v1/users/{id}` | Yes | Update user by ID |
+| DELETE | `/api/v1/users/{id}` | Yes | Delete user by ID |
 | POST | `/api/v1/farms` | Yes | Create a new farm |
 | GET | `/api/v1/farms` | Yes | List all farms for user |
-| GET | `/api/v1/farms/:id` | Yes | Get a specific farm |
-| DELETE | `/api/v1/farms/:id` | Yes | Delete a farm |
-| POST | `/api/v1/farms/:id/alerts` | Yes | Set weather alert thresholds |
-| POST | `/api/v1/predict/crop` | Yes | Get crop recommendation |
-| POST | `/api/v1/predict/fertilizer` | Yes | Get fertilizer recommendation |
-| GET | `/health` | No | Health check |
+| GET | `/api/v1/farms/{farmID}` | Yes | Get a specific farm |
+| PUT | `/api/v1/farms/{farmID}` | Yes | Update a farm |
+| DELETE | `/api/v1/farms/{farmID}` | Yes | Delete a farm |
+| POST | `/api/v1/farms/{farmID}/weather-alerts` | Yes | Create a weather alert |
+| GET | `/api/v1/farms/{farmID}/weather-alerts` | Yes | List weather alerts for farm |
+| GET | `/api/v1/farms/{farmID}/weather-alerts/{weatherID}` | Yes | Get a specific weather alert |
+| PUT | `/api/v1/farms/{farmID}/weather-alerts/{weatherID}` | Yes | Update a weather alert |
+| DELETE | `/api/v1/farms/{farmID}/weather-alerts/{weatherID}` | Yes | Delete a weather alert |
+| POST | `/api/v1/recommend/crop` | Yes | Get crop recommendation |
+| POST | `/api/v1/recommend/fertilizer` | Yes | Get fertilizer recommendation |
+
+### ML Service (FastAPI, internal)
+
+Called by the Go API via `ML_SERVICE_URL`. Not exposed as part of the main REST API.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/` | Service status |
+| GET | `/health` | Health check and model load status |
+| POST | `/predict/crop` | Crop recommendation inference |
+| POST | `/predict/fertilizer` | Fertilizer recommendation inference |
 
 ---
 
