@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
+// RefreshToken represents a persisted, revocable refresh token hash.
 type RefreshToken struct {
 	ID        uuid.UUID `json:"id"`
 	UserID    uuid.UUID `json:"user_id"`

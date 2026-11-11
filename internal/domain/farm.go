@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
+// Farm represents an agricultural plot owned by a user.
 type Farm struct {
 	ID          uuid.UUID `json:"id"`
 	UserID      uuid.UUID `json:"user_id"`
@@ -19,6 +20,7 @@ type Farm struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// NewLocationKey rounds coordinates to 2 decimal places (~1.1 km grid) for forecast caching.
 func NewLocationKey(latitude, longitude float64) string {
 	return fmt.Sprintf("%.2f_%.2f", roundCoordinate(latitude), roundCoordinate(longitude))
 }
@@ -26,7 +28,7 @@ func NewLocationKey(latitude, longitude float64) string {
 func roundCoordinate(value float64) float64 {
 	rounded := math.Round(value*100) / 100
 	if rounded == 0 {
-		return 0
+		return 0 // Avoid "-0.00".
 	}
 	return rounded
 }
