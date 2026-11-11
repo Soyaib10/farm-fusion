@@ -59,15 +59,19 @@ An intelligent system that:
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
+| GET | `/healthz` | No | Liveness probe |
+| GET | `/readyz` | No | Readiness probe (verifies DB connectivity) |
 | POST | `/api/v1/auth/register` | No | Register a new user |
 | POST | `/api/v1/auth/login` | No | Login and receive tokens |
-| POST | `/api/v1/auth/refresh` | No | Refresh access token |
+| POST | `/api/v1/auth/refresh` | No | Rotate refresh token and issue new token pair |
 | POST | `/api/v1/auth/logout` | No | Revoke refresh token |
 | GET | `/api/v1/users/me` | Yes | Get current user profile |
-| GET | `/api/v1/users` | Yes | List all users |
-| GET | `/api/v1/users/{id}` | Yes | Get user by ID |
-| PATCH | `/api/v1/users/{id}` | Yes | Update user by ID |
-| DELETE | `/api/v1/users/{id}` | Yes | Delete user by ID |
+| PATCH | `/api/v1/users/me` | Yes | Update current user profile |
+| DELETE | `/api/v1/users/me` | Yes | Delete current user account |
+| GET | `/api/v1/users` | Admin | List all users (admin role required) |
+| GET | `/api/v1/users/{id}` | Owner/Admin | Get user by ID |
+| PATCH | `/api/v1/users/{id}` | Owner/Admin | Update user by ID |
+| DELETE | `/api/v1/users/{id}` | Owner/Admin | Delete user by ID |
 | POST | `/api/v1/farms` | Yes | Create a new farm |
 | GET | `/api/v1/farms` | Yes | List all farms for user |
 | GET | `/api/v1/farms/{farmID}` | Yes | Get a specific farm |
@@ -397,31 +401,32 @@ Kafka is designed for high-throughput event streaming (millions of messages/seco
 ```
 POST /api/v1/auth/register
     │
-    ├─▶ Validate Input (email, password strength)
-    ├─▶ Hash Password (bcrypt, cost=10)
-    ├─▶ Store User in PostgreSQL
-    └─▶ Return User ID
+    ├─▶ Validate Input (email, strong password, no control chars)
+    ├─▶ Hash Password (bcrypt, cost=12)
+    ├─▶ Store User in PostgreSQL (default role: "user")
+    └─▶ Return User Profile
 
-POST /api/v1/auth/login
+POST /api/v1/auth/login (rate-limited per IP)
     │
-    ├─▶ Fetch User by Email
-    ├─▶ Compare Password Hash
-    ├─▶ Generate JWT Access Token (15 min expiry)
-    ├─▶ Generate Refresh Token (7 days, stored in DB)
+    ├─▶ Fetch User by Case-Insensitive Email
+    ├─▶ Compare Password Hash (with dummy-hash timing equalization)
+    ├─▶ Generate HS256 JWT Access Token (15 min, iss/aud/exp/nbf/jti)
+    ├─▶ Generate 256-bit CSPRNG Refresh Token (7 days, SHA-256 hash stored in DB)
     └─▶ Return Both Tokens
 
 POST /api/v1/auth/refresh
     │
-    ├─▶ Validate Refresh Token from DB
-    ├─▶ Check Expiry & Revocation
-    └─▶ Return New Access Token
+    ├─▶ Atomically Consume Active Refresh Token in PostgreSQL
+    ├─▶ Detect Replay of Revoked Token (revokes all sessions for user on theft)
+    └─▶ Issue New Access Token + Rotated Refresh Token
 ```
 
 **Why this approach:**
 - **JWT for stateless auth:** No session storage needed, scales horizontally
-- **Refresh tokens in DB:** Enables logout and revocation (pure JWT cannot be revoked before expiry)
+- **Atomic refresh token rotation in DB:** Enables logout, single-use rotation, and compromised-token replay detection
 - **Short access token expiry (15 min):** Limits damage if a token is stolen
-- **Bcrypt over SHA256:** Purpose-built for passwords, has built-in salt, adjustable cost factor
+- **Bcrypt (cost=12) + constant-time login:** Purpose-built for passwords with built-in salt, plus dummy bcrypt verification on unknown emails to prevent timing-based user enumeration
+- **Per-IP token-bucket rate limiting:** Protects `/api/v1/auth/*` against credential stuffing and brute-force attacks
 
 **Alternatives considered:**
 - **Session-based auth:** Requires a DB or Redis lookup on every single request — adds latency and a stateful dependency
@@ -430,7 +435,6 @@ POST /api/v1/auth/refresh
 
 **Future Enhancements:**
 - Add 2FA (TOTP)
-- Rate limiting on login attempts
 - Password reset via email
 - OAuth2 for social login
 
@@ -485,8 +489,8 @@ POST /api/v1/farms
 ### Prerequisites
 
 ```bash
-- Go 1.21+
-- Python 3.8+
+- Go 1.25+
+- Python 3.10+
 - PostgreSQL 14+
 - Redis 6+
 - RabbitMQ 3.9+
@@ -498,19 +502,19 @@ Copy `.env.example` to `.env` and fill in the values:
 
 ```env
 # Database
-DATABASE_URL=postgresql://postgres:password@localhost:5432/farm_fusion
+DATABASE_URL=postgres://postgres:password@127.0.0.1:5432/farm_fusion?sslmode=disable
 
 # Redis
-REDIS_URL=redis://localhost:6379
+REDIS_ADDR=127.0.0.1:6379
 
 # RabbitMQ
-RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+RABBITMQ_URL=amqp://guest:guest@127.0.0.1:5672/
 
 # ML Service
-ML_SERVICE_URL=http://localhost:8000
+ML_SERVICE_URL=http://127.0.0.1:8000
 
-# Auth
-JWT_SECRET=your-secret-key-here
+# Auth (minimum 32 bytes; generate with: openssl rand -hex 32)
+JWT_SECRET=replace-with-a-secure-random-32-byte-secret-key
 
 # Weather
 OPENWEATHER_API_KEY=your-api-key
@@ -519,10 +523,11 @@ OPENWEATHER_API_KEY=your-api-key
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=your@gmail.com
-SMTP_PASS=your-app-password
+SMTP_PASSWORD=your-app-password
+SMTP_FROM=your@gmail.com
 
 # Server
-PORT=8080
+SERVER_PORT=8080
 ENV=development
 ```
 
@@ -539,7 +544,7 @@ cp .env.example .env
 
 ```bash
 createdb farm_fusion
-psql -d farm_fusion -f migrations/*.up.sql
+for f in migrations/*.up.sql; do psql -d farm_fusion -f "$f"; done
 ```
 
 ### 3. Start ML Service
@@ -550,14 +555,13 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 python train_models.py  # First time only
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 ### 4. Start Go Backend
 
 ```bash
-go mod download
-go build -o bin/api cmd/api/main.go
+make build
 ./bin/api
 ```
 
@@ -565,12 +569,49 @@ go build -o bin/api cmd/api/main.go
 
 ```bash
 # Terminal 1 — Scheduler (runs daily at 5 AM)
-go build -o bin/scheduler cmd/scheduler/main.go
 ./bin/scheduler
 
 # Terminal 2 — Worker (consumes RabbitMQ queue)
-go build -o bin/worker cmd/worker/main.go
 ./bin/worker
+```
+
+---
+
+## Project Layout (Idiomatic Go)
+
+```
+farm-fusion/
+├── cmd/
+│   ├── api/            # HTTP API server entrypoint (graceful shutdown)
+│   ├── scheduler/      # Daily weather alert scheduler entrypoint
+│   └── worker/         # RabbitMQ notification consumer worker entrypoint
+├── internal/
+│   ├── config/         # Environment configuration & security invariant validation
+│   ├── domain/         # Pure domain entities, value objects & sentinel errors
+│   ├── validator/      # Input & domain invariant validation helpers
+│   ├── platform/       # Infrastructure clients & shared technical adapters
+│   │   ├── cache/      # Redis forecast cache
+│   │   ├── database/   # PostgreSQL pgxpool connection management
+│   │   ├── logger/     # Structured JSON logger with secret redaction
+│   │   ├── mailer/     # CRLF-safe STARTTLS/TLS SMTP sender
+│   │   ├── mlclient/   # FastAPI ML HTTP client
+│   │   ├── queue/      # RabbitMQ publisher, consumer & retry/DLQ topology
+│   │   └── weatherapi/ # Key-safe OpenWeather forecast client
+│   ├── repository/
+│   │   └── postgres/   # PostgreSQL repositories & pgx error mapping
+│   ├── service/        # Business logic & authorization rules
+│   │   ├── auth/       # Registration, constant-time login, HS256 JWT & atomic refresh rotation
+│   │   ├── farm/       # Farm management & ownership checks
+│   │   ├── notification/ # Weather threshold scheduler & email processor
+│   │   ├── recommendation/ # Crop & fertilizer input validation & ML orchestration
+│   │   ├── user/       # User profile management with BOLA/RBAC protection
+│   │   └── weather/    # Weather alert threshold management
+│   └── transport/
+│       └── http/       # Chi router, hardened http.Server, middleware & REST handlers
+├── migrations/         # Numbered PostgreSQL up/down SQL migrations
+├── ml_service/         # Python FastAPI ML inference service & training pipeline
+├── Makefile            # Build, vet, test & run targets
+└── docker-compose.yml  # Loopback-bound local Postgres, Redis & RabbitMQ
 ```
 
 ---

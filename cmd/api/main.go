@@ -2,75 +2,92 @@ package main
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"os"
-	"time"
+	"os/signal"
+	"syscall"
 
-	"github.com/Soyaib10/farm-fusion/internal/app"
 	"github.com/Soyaib10/farm-fusion/internal/config"
-	httpDelivery "github.com/Soyaib10/farm-fusion/internal/delivery/http"
-	authHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/auth"
-	farmHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/farm"
-	recommendationHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/recommendation"
-	userHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/user"
-	weatherHandler "github.com/Soyaib10/farm-fusion/internal/delivery/http/weather"
-	"github.com/Soyaib10/farm-fusion/internal/infra/ml"
-	"github.com/Soyaib10/farm-fusion/internal/infra/postgres"
-	"github.com/Soyaib10/farm-fusion/internal/usecase/auth"
-	farmUsecase "github.com/Soyaib10/farm-fusion/internal/usecase/farm"
-	"github.com/Soyaib10/farm-fusion/internal/usecase/recommendation"
-	"github.com/Soyaib10/farm-fusion/internal/usecase/user"
-	weatherUsecase "github.com/Soyaib10/farm-fusion/internal/usecase/weather"
-	"github.com/Soyaib10/farm-fusion/pkg/logger"
+	"github.com/Soyaib10/farm-fusion/internal/platform/database"
+	"github.com/Soyaib10/farm-fusion/internal/platform/logger"
+	"github.com/Soyaib10/farm-fusion/internal/platform/mlclient"
+	"github.com/Soyaib10/farm-fusion/internal/repository/postgres"
+	authsvc "github.com/Soyaib10/farm-fusion/internal/service/auth"
+	farmsvc "github.com/Soyaib10/farm-fusion/internal/service/farm"
+	recsvc "github.com/Soyaib10/farm-fusion/internal/service/recommendation"
+	usersvc "github.com/Soyaib10/farm-fusion/internal/service/user"
+	weathersvc "github.com/Soyaib10/farm-fusion/internal/service/weather"
+	httpapi "github.com/Soyaib10/farm-fusion/internal/transport/http"
+	"github.com/Soyaib10/farm-fusion/internal/transport/http/handler"
+	"github.com/Soyaib10/farm-fusion/internal/transport/http/middleware"
 )
 
 func main() {
-	cfg, err := config.LoadConfig()
+	log := logger.New(os.Stdout, logger.LevelInfo)
+
+	cfg, err := config.LoadForAPI()
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		log.Fatal(err, map[string]string{"operation": "load_config"})
 	}
 
-	logger := logger.NewLogger(os.Stdout, logger.LevelInfo)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	db, err := postgres.ConnectDB(context.Background(), cfg, logger)
+	db, err := database.Connect(ctx, cfg.Database, log)
 	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+		log.Fatal(err, map[string]string{"operation": "connect_database"})
 	}
 	defer db.Close()
 
-	app := app.NewApplication(cfg, logger, db)
-
+	// Repositories
 	userRepo := postgres.NewUserRepository(db)
-	userUsecase := user.NewUseCase(userRepo)
-
-	authRepo := postgres.NewAuthRepository(db)
-	authUsecase := auth.NewUseCase(userRepo, authRepo, cfg)
-
+	tokenRepo := postgres.NewRefreshTokenRepository(db)
 	farmRepo := postgres.NewFarmRepository(db)
-	farmUsecase := farmUsecase.NewUseCase(farmRepo)
-
 	weatherRepo := postgres.NewWeatherRepository(db)
-	weatherUsecase := weatherUsecase.NewUseCase(weatherRepo, farmUsecase)
 
-	httpClient := &http.Client{
-		Timeout: 10 * time.Second,
+	// External clients
+	mlHTTPClient := &http.Client{Timeout: cfg.ML.Timeout}
+	mlClient := mlclient.NewClient(cfg.ML.BaseURL, cfg.ML.APIKey, mlHTTPClient, log)
+
+	// Services
+	tokenManager := authsvc.NewTokenManager(cfg.Auth)
+	authService := authsvc.NewService(userRepo, tokenRepo, tokenManager, cfg.Auth)
+	userService := usersvc.NewService(userRepo)
+	farmService := farmsvc.NewService(farmRepo)
+	weatherService := weathersvc.NewService(weatherRepo, farmService)
+	recService := recsvc.NewService(mlClient)
+
+	// Rate limiters
+	var globalLimiter, authLimiter *middleware.RateLimiter
+	if cfg.RateLimit.Enabled {
+		globalLimiter = middleware.NewRateLimiter(
+			cfg.RateLimit.RPS, cfg.RateLimit.Burst, cfg.Server.TrustProxy, log,
+		)
+		defer globalLimiter.Close()
+
+		authLimiter = middleware.NewRateLimiter(
+			cfg.RateLimit.AuthRPS, cfg.RateLimit.AuthBurst, cfg.Server.TrustProxy, log,
+		)
+		defer authLimiter.Close()
 	}
-	mlClient := ml.NewMLClient(cfg.MLServiceURL, httpClient, logger)
-	recommendationUsecase := recommendation.NewUseCase(mlClient)
 
-	handlers := &httpDelivery.Handlers{
-		User:           userHandler.NewHandler(app, userUsecase),
-		Auth:           authHandler.NewHandler(app, authUsecase),
-		Recommendation: recommendationHandler.NewHandler(app, recommendationUsecase),
-		Farm:           farmHandler.NewHandler(app, farmUsecase),
-		Weather:        weatherHandler.NewHandler(app, weatherUsecase),
-	}
-	router := httpDelivery.NewHandlers(handlers, cfg, app)
+	// HTTP Transport
+	router := httpapi.NewRouter(httpapi.Dependencies{
+		Config:         cfg,
+		Logger:         log,
+		TokenVerifier:  tokenManager,
+		Health:         handler.NewHealthHandler(db, log),
+		Auth:           handler.NewAuthHandler(authService, log),
+		User:           handler.NewUserHandler(userService, log),
+		Farm:           handler.NewFarmHandler(farmService, log),
+		Weather:        handler.NewWeatherHandler(weatherService, log),
+		Recommendation: handler.NewRecommendationHandler(recService, log),
+		GlobalLimiter:  globalLimiter,
+		AuthLimiter:    authLimiter,
+	})
 
-	port := ":" + cfg.ServerPort
-	logger.PrintInfo("Server starting", map[string]string{"port": port})
-	if err := http.ListenAndServe(port, router); err != nil {
-		logger.PrintFatal(err, map[string]string{"error": "server failed to start"})
+	srv := httpapi.NewServer(cfg.Server, router, log)
+	if err := srv.Serve(ctx); err != nil {
+		log.Fatal(err, map[string]string{"operation": "serve_http"})
 	}
 }

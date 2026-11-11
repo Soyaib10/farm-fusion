@@ -2,50 +2,51 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/Soyaib10/farm-fusion/internal/config"
 	"github.com/Soyaib10/farm-fusion/internal/domain"
-	"github.com/Soyaib10/farm-fusion/internal/infra/postgres"
-	"github.com/Soyaib10/farm-fusion/internal/infra/rabbitmq"
-	"github.com/Soyaib10/farm-fusion/internal/infra/smtp"
-	"github.com/Soyaib10/farm-fusion/internal/usecase/notification"
-	"github.com/Soyaib10/farm-fusion/pkg/logger"
+	"github.com/Soyaib10/farm-fusion/internal/platform/database"
+	"github.com/Soyaib10/farm-fusion/internal/platform/logger"
+	"github.com/Soyaib10/farm-fusion/internal/platform/mailer"
+	"github.com/Soyaib10/farm-fusion/internal/platform/queue"
+	"github.com/Soyaib10/farm-fusion/internal/repository/postgres"
+	"github.com/Soyaib10/farm-fusion/internal/service/notification"
 )
 
 func main() {
-	cfg, err := config.LoadConfig()
+	log := logger.New(os.Stdout, logger.LevelInfo)
+
+	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		log.Fatal(err, map[string]string{"operation": "load_config"})
 	}
 
-	logger := logger.NewLogger(os.Stdout, logger.LevelInfo)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	db, err := postgres.ConnectDB(ctx, cfg, logger)
+	db, err := database.Connect(ctx, cfg.Database, log)
 	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+		log.Fatal(err, map[string]string{"operation": "connect_database"})
 	}
 	defer db.Close()
 
-	consumer, err := rabbitmq.NewConsumer(cfg.RabbitMQ.URL, cfg.RabbitMQ.Queue, logger)
+	consumer, err := queue.NewConsumer(cfg.RabbitMQ.URL, cfg.RabbitMQ.Queue, log)
 	if err != nil {
-		log.Fatalf("failed to connect to rabbitmq: %v", err)
+		log.Fatal(err, map[string]string{"operation": "connect_rabbitmq"})
 	}
 	defer consumer.Close()
 
 	logRepo := postgres.NewNotificationLogRepository(db)
-	emailSender := smtp.NewSender(cfg.SMTP)
-	processor := notification.NewProcessorUseCase(emailSender, logRepo)
+	emailSender := mailer.NewSender(cfg.SMTP)
+	processor := notification.NewProcessor(emailSender, logRepo, log)
 
-	logger.PrintInfo("Weather notification worker started", map[string]string{"queue": cfg.RabbitMQ.Queue})
+	log.Info("Weather notification worker started", map[string]string{"queue": cfg.RabbitMQ.Queue})
 	if err := consumer.Consume(ctx, func(payload *domain.NotificationPayload) error {
 		return processor.Process(ctx, payload)
 	}); err != nil {
-		logger.PrintFatal(err, map[string]string{"operation": "consume_weather_notifications"})
+		log.Fatal(err, map[string]string{"operation": "consume_weather_notifications"})
 	}
 }
