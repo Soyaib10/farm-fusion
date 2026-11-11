@@ -69,7 +69,7 @@ func HandleDomainError(w http.ResponseWriter, r *http.Request, log *logger.Logge
 		errors.Is(err, domain.ErrTokenRevoked):
 		UnauthorizedBearer(w, r, log, "invalid or expired authentication token")
 	case errors.Is(err, domain.ErrForbidden):
-		Forbidden(w, r, log, )
+		Forbidden(w, r, log)
 	case errors.Is(err, domain.ErrNotFound):
 		NotFound(w, r, log)
 	case errors.Is(err, domain.ErrAlreadyExists):
