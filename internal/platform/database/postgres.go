@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/Soyaib10/farm-fusion/internal/config"
@@ -28,6 +29,9 @@ func Connect(ctx context.Context, cfg config.DatabaseConfig, log *logger.Logger)
 	poolCfg.MaxConnIdleTime = cfg.MaxConnIdleTime
 	poolCfg.HealthCheckPeriod = cfg.HealthCheckPeriod
 	poolCfg.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
+	if cfg.StatementTimeout > 0 {
+		poolCfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(cfg.StatementTimeout.Milliseconds(), 10)
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {

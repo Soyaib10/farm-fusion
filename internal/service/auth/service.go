@@ -17,22 +17,40 @@ import (
 	"github.com/google/uuid"
 )
 
-const refreshTokenBytes = 32
+const (
+	refreshTokenBytes = 32
+
+	// maxFailedLogins consecutive failures lock the account for loginLockout.
+	maxFailedLogins = 5
+	loginLockout    = 15 * time.Minute
+)
 
 // UserStore defines user persistence operations required by the auth service.
 type UserStore interface {
 	Create(ctx context.Context, user *domain.User) error
 	GetByEmail(ctx context.Context, email string) (*domain.User, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
+	RecordLoginFailure(ctx context.Context, id uuid.UUID, maxFailures int, lockout time.Duration) error
+	ResetLoginFailures(ctx context.Context, id uuid.UUID) error
 }
 
 // RefreshTokenStore defines refresh token persistence operations required by the auth service.
 type RefreshTokenStore interface {
 	Save(ctx context.Context, token *domain.RefreshToken) error
-	GetByHash(ctx context.Context, tokenHash string) (*domain.RefreshToken, error)
-	ConsumeActive(ctx context.Context, tokenHash string) (*domain.RefreshToken, error)
+	// Rotate atomically consumes the token identified by oldHash and stores next for the same user.
+	// It returns domain.ErrNotFound for unknown tokens, domain.ErrTokenExpired for expired ones, and
+	// domain.ErrTokenRevoked after revoking every session of the owner when a consumed token is replayed.
+	Rotate(ctx context.Context, oldHash string, next *domain.RefreshToken) error
 	RevokeByHash(ctx context.Context, tokenHash string) error
 	RevokeAllForUser(ctx context.Context, userID uuid.UUID) error
+}
+
+// SessionStore holds server-side access-token state.
+type SessionStore interface {
+	// GetSessionState returns domain.ErrNotFound when the user no longer exists.
+	GetSessionState(ctx context.Context, userID uuid.UUID, tokenID string) (domain.SessionState, error)
+	RevokeAccessToken(ctx context.Context, tokenID string, expiresAt time.Time) error
+	BumpTokenVersion(ctx context.Context, userID uuid.UUID) error
 }
 
 // RegisterInput holds user registration parameters.
@@ -48,7 +66,7 @@ type LoginInput struct {
 	Password string
 }
 
-// AuthResult contains authenticated user details and optional token pair.
+// AuthResult contains authenticated user details and the issued token pair.
 type AuthResult struct {
 	AccessToken  string
 	RefreshToken string
@@ -59,22 +77,28 @@ type AuthResult struct {
 type Service struct {
 	users      UserStore
 	tokens     RefreshTokenStore
+	sessions   SessionStore
 	jwtManager *TokenManager
 	refreshTTL time.Duration
+	now        func() time.Time
 }
 
 // NewService constructs an authentication Service.
-func NewService(users UserStore, tokens RefreshTokenStore, jwtManager *TokenManager, cfg config.AuthConfig) *Service {
+func NewService(users UserStore, tokens RefreshTokenStore, sessions SessionStore, jwtManager *TokenManager, cfg config.AuthConfig) *Service {
 	return &Service{
 		users:      users,
 		tokens:     tokens,
+		sessions:   sessions,
 		jwtManager: jwtManager,
 		refreshTTL: cfg.RefreshTokenDuration,
+		now:        func() time.Time { return time.Now().UTC() },
 	}
 }
 
-// Register validates registration input, hashes the password, and creates a standard user account.
-func (s *Service) Register(ctx context.Context, input RegisterInput) (*AuthResult, error) {
+// Register validates registration input and creates a standard user account. The outcome is the same
+// whether or not the email is already registered, and both paths spend the same bcrypt work, so the
+// endpoint cannot be used to discover accounts.
+func (s *Service) Register(ctx context.Context, input RegisterInput) error {
 	name := strings.TrimSpace(input.Name)
 	email := normalizeEmail(input.Email)
 
@@ -92,15 +116,7 @@ func (s *Service) Register(ctx context.Context, input RegisterInput) (*AuthResul
 	v.Check(pwOK, "password", pwMsg)
 
 	if err := v.Err(); err != nil {
-		return nil, err
-	}
-
-	existing, err := s.users.GetByEmail(ctx, email)
-	if err != nil && !errors.Is(err, domain.ErrNotFound) {
-		return nil, fmt.Errorf("lookup existing user: %w", err)
-	}
-	if existing != nil {
-		return nil, domain.ErrAlreadyExists
+		return err
 	}
 
 	u := &domain.User{
@@ -108,20 +124,24 @@ func (s *Service) Register(ctx context.Context, input RegisterInput) (*AuthResul
 		Name:      name,
 		Email:     email,
 		Role:      domain.RoleUser,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: s.now(),
 	}
 	if err := u.SetPassword(input.Password); err != nil {
-		return nil, fmt.Errorf("hash password: %w", err)
+		return fmt.Errorf("hash password: %w", err)
 	}
 
 	if err := s.users.Create(ctx, u); err != nil {
-		return nil, err
+		if errors.Is(err, domain.ErrAlreadyExists) {
+			return nil
+		}
+		return err
 	}
-
-	return &AuthResult{User: u}, nil
+	return nil
 }
 
 // Login authenticates credentials in constant time and issues an access/refresh token pair.
+// Accounts are locked for a short period after repeated failures; a locked account answers
+// exactly like a wrong password.
 func (s *Service) Login(ctx context.Context, input LoginInput) (*AuthResult, error) {
 	email := normalizeEmail(input.Email)
 
@@ -144,8 +164,22 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (*AuthResult, err
 		return nil, fmt.Errorf("get user for login: %w", err)
 	}
 
-	if !u.CheckPassword(input.Password) {
+	if u.IsLocked(s.now()) {
+		domain.SimulatePasswordCheck(input.Password)
 		return nil, domain.ErrInvalidCredentials
+	}
+
+	if !u.CheckPassword(input.Password) {
+		if err := s.users.RecordLoginFailure(ctx, u.ID, maxFailedLogins, loginLockout); err != nil {
+			return nil, fmt.Errorf("record login failure: %w", err)
+		}
+		return nil, domain.ErrInvalidCredentials
+	}
+
+	if u.FailedLoginCount > 0 {
+		if err := s.users.ResetLoginFailures(ctx, u.ID); err != nil {
+			return nil, fmt.Errorf("reset login failures: %w", err)
+		}
 	}
 
 	return s.issueTokenPair(ctx, u)
@@ -158,31 +192,23 @@ func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*AuthRes
 		return nil, domain.ErrUnauthorized
 	}
 
-	tokenHash := hashToken(trimmed)
-
-	consumed, err := s.tokens.ConsumeActive(ctx, tokenHash)
+	rawNext, next, err := s.newRefreshToken()
 	if err != nil {
-		if !errors.Is(err, domain.ErrNotFound) {
-			return nil, fmt.Errorf("consume refresh token: %w", err)
-		}
-
-		// Inspect whether the token was already revoked (token theft / replay) or expired.
-		existing, lookupErr := s.tokens.GetByHash(ctx, tokenHash)
-		if lookupErr != nil {
-			return nil, domain.ErrUnauthorized
-		}
-		if existing.Revoked {
-			// Compromised token reuse detected: revoke all active sessions for this user.
-			_ = s.tokens.RevokeAllForUser(ctx, existing.UserID)
-			return nil, domain.ErrTokenRevoked
-		}
-		if time.Now().UTC().After(existing.ExpiresAt) {
-			return nil, domain.ErrTokenExpired
-		}
-		return nil, domain.ErrUnauthorized
+		return nil, err
 	}
 
-	u, err := s.users.GetByID(ctx, consumed.UserID)
+	if err := s.tokens.Rotate(ctx, hashToken(trimmed), next); err != nil {
+		switch {
+		case errors.Is(err, domain.ErrNotFound):
+			return nil, domain.ErrUnauthorized
+		case errors.Is(err, domain.ErrTokenRevoked), errors.Is(err, domain.ErrTokenExpired):
+			return nil, err
+		default:
+			return nil, fmt.Errorf("rotate refresh token: %w", err)
+		}
+	}
+
+	u, err := s.users.GetByID(ctx, next.UserID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			return nil, domain.ErrUnauthorized
@@ -190,11 +216,38 @@ func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (*AuthRes
 		return nil, fmt.Errorf("get user for refresh: %w", err)
 	}
 
-	return s.issueTokenPair(ctx, u)
+	accessToken, err := s.jwtManager.IssueAccessToken(u)
+	if err != nil {
+		return nil, err
+	}
+	return &AuthResult{AccessToken: accessToken, RefreshToken: rawNext, User: u}, nil
 }
 
-// Logout revokes the supplied refresh token.
-func (s *Service) Logout(ctx context.Context, rawRefreshToken string) error {
+// Authenticate verifies an access token and checks it against current account state: the user must
+// still exist, the token version must match, and the token must not have been individually revoked.
+// The returned role comes from the database, not from the token.
+func (s *Service) Authenticate(ctx context.Context, rawAccessToken string) (domain.Actor, error) {
+	tok, err := s.jwtManager.VerifyAccessToken(rawAccessToken)
+	if err != nil {
+		return domain.Actor{}, domain.ErrUnauthorized
+	}
+
+	state, err := s.sessions.GetSessionState(ctx, tok.UserID, tok.TokenID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return domain.Actor{}, domain.ErrUnauthorized
+		}
+		return domain.Actor{}, fmt.Errorf("load session state: %w", err)
+	}
+	if state.TokenRevoked || state.TokenVersion != tok.Version || !state.Role.IsValid() {
+		return domain.Actor{}, domain.ErrUnauthorized
+	}
+
+	return domain.Actor{ID: tok.UserID, Role: state.Role, TokenID: tok.TokenID}, nil
+}
+
+// Logout revokes the supplied refresh token and, when given, the access token used for this device.
+func (s *Service) Logout(ctx context.Context, rawRefreshToken, rawAccessToken string) error {
 	trimmed := strings.TrimSpace(rawRefreshToken)
 	v := validator.New()
 	v.Check(trimmed != "" && len(trimmed) <= 512, "refresh_token", "must be a valid refresh token")
@@ -202,7 +255,29 @@ func (s *Service) Logout(ctx context.Context, rawRefreshToken string) error {
 		return err
 	}
 
-	return s.tokens.RevokeByHash(ctx, hashToken(trimmed))
+	if err := s.tokens.RevokeByHash(ctx, hashToken(trimmed)); err != nil {
+		return err
+	}
+
+	if rawAccessToken == "" {
+		return nil
+	}
+	tok, err := s.jwtManager.VerifyAccessToken(rawAccessToken)
+	if err != nil {
+		return nil
+	}
+	return s.sessions.RevokeAccessToken(ctx, tok.TokenID, tok.ExpiresAt)
+}
+
+// LogoutAll invalidates every access and refresh token issued to the actor.
+func (s *Service) LogoutAll(ctx context.Context, actor domain.Actor) error {
+	if err := s.sessions.BumpTokenVersion(ctx, actor.ID); err != nil {
+		return fmt.Errorf("bump token version: %w", err)
+	}
+	if err := s.tokens.RevokeAllForUser(ctx, actor.ID); err != nil {
+		return fmt.Errorf("revoke refresh tokens: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) issueTokenPair(ctx context.Context, u *domain.User) (*AuthResult, error) {
@@ -211,20 +286,11 @@ func (s *Service) issueTokenPair(ctx context.Context, u *domain.User) (*AuthResu
 		return nil, err
 	}
 
-	rawRefresh, err := generateSecureToken(refreshTokenBytes)
+	rawRefresh, rt, err := s.newRefreshToken()
 	if err != nil {
-		return nil, fmt.Errorf("generate refresh token: %w", err)
+		return nil, err
 	}
-
-	now := time.Now().UTC()
-	rt := &domain.RefreshToken{
-		ID:        uuid.New(),
-		UserID:    u.ID,
-		TokenHash: hashToken(rawRefresh),
-		ExpiresAt: now.Add(s.refreshTTL),
-		Revoked:   false,
-		CreatedAt: now,
-	}
+	rt.UserID = u.ID
 
 	if err := s.tokens.Save(ctx, rt); err != nil {
 		return nil, fmt.Errorf("save refresh token: %w", err)
@@ -234,6 +300,20 @@ func (s *Service) issueTokenPair(ctx context.Context, u *domain.User) (*AuthResu
 		AccessToken:  accessToken,
 		RefreshToken: rawRefresh,
 		User:         u,
+	}, nil
+}
+
+func (s *Service) newRefreshToken() (string, *domain.RefreshToken, error) {
+	raw, err := generateSecureToken(refreshTokenBytes)
+	if err != nil {
+		return "", nil, fmt.Errorf("generate refresh token: %w", err)
+	}
+	now := s.now()
+	return raw, &domain.RefreshToken{
+		ID:        uuid.New(),
+		TokenHash: hashToken(raw),
+		ExpiresAt: now.Add(s.refreshTTL),
+		CreatedAt: now,
 	}, nil
 }
 

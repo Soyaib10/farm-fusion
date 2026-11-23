@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/Soyaib10/farm-fusion/internal/domain"
 	"github.com/google/uuid"
@@ -30,38 +31,60 @@ func (r *RefreshTokenRepository) Save(ctx context.Context, token *domain.Refresh
 	return mapError("save refresh token", err)
 }
 
-// GetByHash retrieves a refresh token record regardless of revocation or expiry state.
-func (r *RefreshTokenRepository) GetByHash(ctx context.Context, tokenHash string) (*domain.RefreshToken, error) {
-	const query = `
-		SELECT id, user_id, token_hash, expires_at, revoked, created_at
+// Rotate consumes the refresh token identified by oldHash and inserts next for the same user in one
+// transaction. The old row is locked with FOR UPDATE, so concurrent rotations of the same token are
+// serialized: the loser sees a revoked token and revokes every session of the owner, including the
+// row the winner just inserted. next.UserID is set from the consumed row.
+func (r *RefreshTokenRepository) Rotate(ctx context.Context, oldHash string, next *domain.RefreshToken) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return mapError("begin refresh rotation", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var (
+		userID    uuid.UUID
+		revoked   bool
+		expiresAt time.Time
+	)
+	const lockQuery = `
+		SELECT user_id, revoked, expires_at
 		FROM refresh_tokens
 		WHERE token_hash = $1
+		FOR UPDATE
 	`
-	var t domain.RefreshToken
-	if err := r.db.QueryRow(ctx, query, tokenHash).Scan(
-		&t.ID, &t.UserID, &t.TokenHash, &t.ExpiresAt, &t.Revoked, &t.CreatedAt,
-	); err != nil {
-		return nil, mapError("get refresh token", err)
+	if err := tx.QueryRow(ctx, lockQuery, oldHash).Scan(&userID, &revoked, &expiresAt); err != nil {
+		return mapError("lock refresh token", err)
 	}
-	return &t, nil
-}
 
-// ConsumeActive atomically marks an unrevoked, unexpired refresh token as revoked and returns it.
-// If the token does not exist, is already revoked, or is expired, domain.ErrNotFound is returned.
-func (r *RefreshTokenRepository) ConsumeActive(ctx context.Context, tokenHash string) (*domain.RefreshToken, error) {
-	const query = `
-		UPDATE refresh_tokens
-		SET revoked = TRUE
-		WHERE token_hash = $1 AND revoked = FALSE AND expires_at > NOW()
-		RETURNING id, user_id, token_hash, expires_at, revoked, created_at
-	`
-	var t domain.RefreshToken
-	if err := r.db.QueryRow(ctx, query, tokenHash).Scan(
-		&t.ID, &t.UserID, &t.TokenHash, &t.ExpiresAt, &t.Revoked, &t.CreatedAt,
-	); err != nil {
-		return nil, mapError("consume refresh token", err)
+	if revoked {
+		if _, err := tx.Exec(ctx,
+			`UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = $1 AND revoked = FALSE`, userID,
+		); err != nil {
+			return mapError("revoke user refresh tokens", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return mapError("commit refresh revocation", err)
+		}
+		return domain.ErrTokenRevoked
 	}
-	return &t, nil
+	if !time.Now().Before(expiresAt) {
+		return domain.ErrTokenExpired
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked = TRUE WHERE token_hash = $1`, oldHash); err != nil {
+		return mapError("consume refresh token", err)
+	}
+
+	next.UserID = userID
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, revoked, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, next.ID, next.UserID, next.TokenHash, next.ExpiresAt, next.Revoked, next.CreatedAt); err != nil {
+		return mapError("save rotated refresh token", err)
+	}
+
+	return mapError("commit refresh rotation", tx.Commit(ctx))
 }
 
 // RevokeByHash marks a single refresh token as revoked.

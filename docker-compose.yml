@@ -1,38 +1,63 @@
+# Local development stack. Every password must come from .env; there are no fallback credentials.
+# Images are pinned by digest. To update one, resolve the new tag's digest and replace both together.
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+# The official postgres, redis, and rabbitmq entrypoints chown their data dirs and drop to a service
+# user, so they need exactly these capabilities back.
+x-entrypoint-caps: &entrypoint-caps
+  cap_add:
+    - CHOWN
+    - DAC_OVERRIDE
+    - FOWNER
+    - SETGID
+    - SETUID
+
 services:
   postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
+    <<: [*hardening, *entrypoint-caps]
+    image: postgres:16-alpine@sha256:f2f98726820d0342055351c6e9d36e705f5bfffb3dd53ff556325114b08afb6d
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
-      POSTGRES_DB: ${POSTGRES_DB:-farm_fusion}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-farm_fusion}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
       timeout: 5s
       retries: 5
 
   redis:
-    image: redis:7-alpine
-    restart: unless-stopped
+    <<: [*hardening, *entrypoint-caps]
+    image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      # redis-cli reads this, so the password never appears in the healthcheck's argv.
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # An unauthenticated PING still exits 0 with a NOAUTH error, so match the reply.
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5
 
   rabbitmq:
-    image: rabbitmq:3.13-management-alpine
-    restart: unless-stopped
+    <<: [*hardening, *entrypoint-caps]
+    image: rabbitmq:3.13-management-alpine@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?set RABBITMQ_USER in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:?set RABBITMQ_PASS in .env}
     ports:
       - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
       - "127.0.0.1:${RABBITMQ_MGMT_PORT:-15672}:15672"
@@ -41,6 +66,26 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Opt-in: `docker compose --profile ml up -d`. run.sh starts the ML service from the venv instead.
+  ml:
+    <<: *hardening
+    profiles: ["ml"]
+    build: ./ml_service
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      ENV: ${ENV:-development}
+      ML_API_KEY: ${ML_API_KEY:?set ML_API_KEY in .env}
+    ports:
+      - "127.0.0.1:${ML_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status != 200)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
 
 volumes:
   postgres_data:

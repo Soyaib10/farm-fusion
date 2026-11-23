@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -11,7 +13,19 @@ import (
 	"github.com/joho/godotenv"
 )
 
-const minJWTSecretLength = 32
+const (
+	minJWTSecretLength      = 32
+	minMLAPIKeyLength       = 32
+	maxAccessTokenDuration  = 15 * time.Minute
+	maxRefreshTokenDuration = 30 * 24 * time.Hour
+)
+
+// knownExampleSecrets lists secret values shipped in this repository (.env.example, README).
+// Anyone who has read the repo knows them, so they are rejected in every environment.
+var knownExampleSecrets = []string{
+	"replace-with-a-secure-random-32-byte-secret-key",
+	"replace-with-a-secure-random-32-byte-ml-api-key",
+}
 
 // Config holds all application configuration loaded from the environment.
 type Config struct {
@@ -24,6 +38,7 @@ type Config struct {
 	RabbitMQ  RabbitMQConfig
 	Weather   WeatherConfig
 	SMTP      SMTPConfig
+	Scheduler SchedulerConfig
 	CORS      CORSConfig
 	RateLimit RateLimitConfig
 }
@@ -42,6 +57,8 @@ type ServerConfig struct {
 	IdleTimeout     time.Duration
 	ShutdownTimeout time.Duration
 	TrustProxy      bool
+	// TrustedProxies lists the CIDRs whose X-Forwarded-For entries are honored when TrustProxy is set.
+	TrustedProxies []netip.Prefix
 }
 
 // Addr returns the host:port listen address for net/http.
@@ -58,6 +75,7 @@ type DatabaseConfig struct {
 	MaxConnIdleTime   time.Duration
 	HealthCheckPeriod time.Duration
 	ConnectTimeout    time.Duration
+	StatementTimeout  time.Duration
 }
 
 // AuthConfig configures JWT signing/verification and token lifetimes.
@@ -108,6 +126,12 @@ type SMTPConfig struct {
 	Timeout    time.Duration
 }
 
+// SchedulerConfig configures the daily weather evaluation run.
+type SchedulerConfig struct {
+	Hour     int
+	Location *time.Location
+}
+
 // CORSConfig configures Cross-Origin Resource Sharing policies.
 type CORSConfig struct {
 	AllowedOrigins []string
@@ -130,16 +154,27 @@ func Load() (*Config, error) {
 
 	env := strings.ToLower(strings.TrimSpace(getEnv("ENV", "development")))
 
+	trustedProxies, err := parseCIDRs(getEnvCSV("TRUSTED_PROXY_CIDRS", nil))
+	if err != nil {
+		return nil, err
+	}
+
+	schedulerLocation, err := time.LoadLocation(getEnv("SCHEDULER_TIMEZONE", "Local"))
+	if err != nil {
+		return nil, fmt.Errorf("SCHEDULER_TIMEZONE is not a valid IANA zone: %w", err)
+	}
+
 	cfg := &Config{
 		Env: env,
 		Server: ServerConfig{
-			Host:            getEnv("SERVER_HOST", ""),
+			Host:            getEnv("SERVER_HOST", "127.0.0.1"),
 			Port:            getEnv("SERVER_PORT", getEnv("PORT", "8080")),
 			ReadTimeout:     getEnvDuration("SERVER_READ_TIMEOUT", 10*time.Second),
 			WriteTimeout:    getEnvDuration("SERVER_WRITE_TIMEOUT", 30*time.Second),
 			IdleTimeout:     getEnvDuration("SERVER_IDLE_TIMEOUT", 60*time.Second),
 			ShutdownTimeout: getEnvDuration("SERVER_SHUTDOWN_TIMEOUT", 15*time.Second),
 			TrustProxy:      getEnvBool("TRUST_PROXY", false),
+			TrustedProxies:  trustedProxies,
 		},
 		Database: DatabaseConfig{
 			URL:               getEnv("DATABASE_URL", ""),
@@ -149,6 +184,7 @@ func Load() (*Config, error) {
 			MaxConnIdleTime:   getEnvDuration("DB_MAX_CONN_IDLE_TIME", 30*time.Minute),
 			HealthCheckPeriod: getEnvDuration("DB_HEALTH_CHECK_PERIOD", 5*time.Minute),
 			ConnectTimeout:    getEnvDuration("DB_CONNECT_TIMEOUT", 10*time.Second),
+			StatementTimeout:  getEnvDuration("DB_STATEMENT_TIMEOUT", 30*time.Second),
 		},
 		Auth: AuthConfig{
 			JWTSecret:            getEnv("JWT_SECRET", ""),
@@ -186,6 +222,10 @@ func Load() (*Config, error) {
 			RequireTLS: getEnvBool("SMTP_REQUIRE_TLS", true),
 			Timeout:    getEnvDuration("SMTP_TIMEOUT", 15*time.Second),
 		},
+		Scheduler: SchedulerConfig{
+			Hour:     getEnvInt("SCHEDULER_HOUR", 5),
+			Location: schedulerLocation,
+		},
 		CORS: CORSConfig{
 			AllowedOrigins: getEnvCSV("CORS_ALLOWED_ORIGINS", nil),
 		},
@@ -213,6 +253,9 @@ func LoadForAPI() (*Config, error) {
 	if err := cfg.ValidateAuth(); err != nil {
 		return nil, err
 	}
+	if err := cfg.ValidateML(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -236,15 +279,137 @@ func (c *Config) Validate() error {
 	if c.SMTP.Port < 1 || c.SMTP.Port > 65535 {
 		return fmt.Errorf("SMTP_PORT must be a valid TCP port (1-65535), got %d", c.SMTP.Port)
 	}
-	if c.IsProduction() && strings.Contains(c.Database.URL, "sslmode=disable") {
-		return errors.New("DATABASE_URL must not disable SSL in production")
+	if c.Database.StatementTimeout < 0 {
+		return errors.New("DB_STATEMENT_TIMEOUT cannot be negative")
+	}
+	if c.IsProduction() {
+		if err := validateProductionSSLMode(c.Database.URL); err != nil {
+			return err
+		}
+		if rabbitUsesGuest(c.RabbitMQ.URL) {
+			return errors.New("RABBITMQ_URL must not use the default guest account in production")
+		}
 	}
 	for _, origin := range c.CORS.AllowedOrigins {
 		if origin == "*" && c.IsProduction() {
 			return errors.New("CORS_ALLOWED_ORIGINS cannot contain wildcard '*' in production")
 		}
 	}
+	if c.Server.TrustProxy && len(c.Server.TrustedProxies) == 0 {
+		return errors.New("TRUSTED_PROXY_CIDRS is required when TRUST_PROXY is enabled")
+	}
+	if c.RateLimit.Enabled {
+		if c.RateLimit.RPS <= 0 || c.RateLimit.Burst < 1 {
+			return errors.New("RATE_LIMIT_RPS must be positive and RATE_LIMIT_BURST at least 1")
+		}
+		if c.RateLimit.AuthRPS <= 0 || c.RateLimit.AuthBurst < 1 {
+			return errors.New("AUTH_RATE_LIMIT_RPS must be positive and AUTH_RATE_LIMIT_BURST at least 1")
+		}
+	}
+	if c.Weather.CacheTTL <= 0 {
+		return errors.New("WEATHER_CACHE_TTL must be a positive number of seconds")
+	}
+	if c.Scheduler.Hour < 0 || c.Scheduler.Hour > 23 {
+		return fmt.Errorf("SCHEDULER_HOUR must be between 0 and 23, got %d", c.Scheduler.Hour)
+	}
 	return nil
+}
+
+// ValidateML verifies the shared secret used to authenticate calls to the internal ML service.
+func (c *Config) ValidateML() error {
+	key := strings.TrimSpace(c.ML.APIKey)
+	if len(key) < minMLAPIKeyLength {
+		return fmt.Errorf("ML_API_KEY is required and must be at least %d bytes long", minMLAPIKeyLength)
+	}
+	if isKnownExampleSecret(key) {
+		return errors.New("ML_API_KEY is the example value from the repository; generate a new one")
+	}
+	return nil
+}
+
+// validateProductionSSLMode requires certificate-verifying TLS for PostgreSQL. pgx treats a missing
+// sslmode as "prefer" (unverified TLS with plaintext fallback), and "require" skips verification.
+func validateProductionSSLMode(dsn string) error {
+	params := databaseParams(dsn)
+	mode := params["sslmode"]
+	if mode == "" {
+		mode = os.Getenv("PGSSLMODE")
+	}
+	switch mode {
+	case "verify-full":
+		return nil
+	case "verify-ca":
+		if params["sslrootcert"] == "" && os.Getenv("PGSSLROOTCERT") == "" {
+			return errors.New("DATABASE_URL with sslmode=verify-ca requires an explicit sslrootcert in production")
+		}
+		return nil
+	case "":
+		return errors.New("DATABASE_URL must set sslmode=verify-full in production")
+	default:
+		return fmt.Errorf("DATABASE_URL sslmode=%s does not verify the server certificate; use verify-full in production", mode)
+	}
+}
+
+// databaseParams extracts connection parameters from a postgres:// URL or a key=value DSN.
+func databaseParams(dsn string) map[string]string {
+	params := make(map[string]string)
+	trimmed := strings.TrimSpace(dsn)
+	if strings.HasPrefix(trimmed, "postgres://") || strings.HasPrefix(trimmed, "postgresql://") {
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return params
+		}
+		for k, v := range u.Query() {
+			if len(v) > 0 {
+				params[k] = v[len(v)-1]
+			}
+		}
+		return params
+	}
+	for _, field := range strings.Fields(trimmed) {
+		if k, v, ok := strings.Cut(field, "="); ok {
+			params[k] = strings.Trim(v, `'`)
+		}
+	}
+	return params
+}
+
+func rabbitUsesGuest(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return false
+	}
+	pass, _ := u.User.Password()
+	return u.User.Username() == "guest" || pass == "guest"
+}
+
+func isKnownExampleSecret(secret string) bool {
+	for _, known := range knownExampleSecrets {
+		if strings.EqualFold(secret, known) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseCIDRs(raw []string) ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, 0, len(raw))
+	for _, entry := range raw {
+		if !strings.Contains(entry, "/") {
+			addr, err := netip.ParseAddr(entry)
+			if err != nil {
+				return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS contains invalid address %q", entry)
+			}
+			prefixes = append(prefixes, netip.PrefixFrom(addr.Unmap(), addr.Unmap().BitLen()))
+			continue
+		}
+		prefix, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS contains invalid CIDR %q", entry)
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
 }
 
 // ValidateAuth verifies cryptographic secret requirements for JWT authentication.
@@ -256,15 +421,19 @@ func (c *Config) ValidateAuth() error {
 	if len(secret) < minJWTSecretLength {
 		return fmt.Errorf("JWT_SECRET must be at least %d bytes long for HS256 security", minJWTSecretLength)
 	}
+	if isKnownExampleSecret(secret) {
+		return errors.New("JWT_SECRET is the example value from the repository; generate one with: openssl rand -hex 32")
+	}
 	lower := strings.ToLower(secret)
-	if c.IsProduction() && (strings.Contains(lower, "change-me") || strings.Contains(lower, "your-secret")) {
+	if c.IsProduction() && (strings.Contains(lower, "change-me") || strings.Contains(lower, "your-secret") ||
+		strings.Contains(lower, "replace-with")) {
 		return errors.New("JWT_SECRET contains an insecure placeholder value in production")
 	}
-	if c.Auth.AccessTokenDuration <= 0 || c.Auth.AccessTokenDuration > 24*time.Hour {
-		return errors.New("ACCESS_TOKEN_DURATION must be between 1s and 24h")
+	if c.Auth.AccessTokenDuration <= 0 || c.Auth.AccessTokenDuration > maxAccessTokenDuration {
+		return fmt.Errorf("ACCESS_TOKEN_DURATION must be between 1s and %s", maxAccessTokenDuration)
 	}
-	if c.Auth.RefreshTokenDuration <= 0 {
-		return errors.New("REFRESH_TOKEN_DURATION must be positive")
+	if c.Auth.RefreshTokenDuration <= 0 || c.Auth.RefreshTokenDuration > maxRefreshTokenDuration {
+		return fmt.Errorf("REFRESH_TOKEN_DURATION must be between 1s and %s", maxRefreshTokenDuration)
 	}
 	return nil
 }

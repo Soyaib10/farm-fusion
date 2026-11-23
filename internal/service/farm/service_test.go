@@ -78,11 +78,17 @@ func TestFarmServiceValidationAndOwnership(t *testing.T) {
 		t.Fatalf("got LocationKey %q, want 23.81_90.41", created.LocationKey)
 	}
 
-	// Intruder cannot read, update, or delete owner's farm
-	if _, err := svc.GetByID(ctx, created.ID, intruderID); !errors.Is(err, domain.ErrForbidden) {
-		t.Fatalf("GetByID as intruder got %v, want ErrForbidden", err)
+	// Intruder cannot read, update, or delete owner's farm, and cannot tell it exists.
+	if _, err := svc.GetByID(ctx, created.ID, intruderID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetByID as intruder got %v, want ErrNotFound", err)
 	}
-	if err := svc.Delete(ctx, created.ID, intruderID); !errors.Is(err, domain.ErrForbidden) {
-		t.Fatalf("Delete as intruder got %v, want ErrForbidden", err)
+	if _, err := svc.Update(ctx, created.ID, intruderID, UpsertInput{Name: "Taken", Latitude: 1, Longitude: 1}); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Update as intruder got %v, want ErrNotFound", err)
+	}
+	if err := svc.Delete(ctx, created.ID, intruderID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Delete as intruder got %v, want ErrNotFound", err)
+	}
+	if _, err := svc.GetByID(ctx, uuid.New(), intruderID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetByID on missing farm got %v, want ErrNotFound", err)
 	}
 }

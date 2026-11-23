@@ -40,12 +40,15 @@ func main() {
 	defer consumer.Close()
 
 	logRepo := postgres.NewNotificationLogRepository(db)
-	emailSender := mailer.NewSender(cfg.SMTP)
-	processor := notification.NewProcessor(emailSender, logRepo, log)
+	userRepo := postgres.NewUserRepository(db)
+	emailSender := mailer.NewSender(cfg.SMTP, func(err error) {
+		log.Error(err, map[string]string{"operation": "smtp_quit_after_accepted_message"})
+	})
+	processor := notification.NewProcessor(emailSender, logRepo, userRepo, log)
 
 	log.Info("Weather notification worker started", map[string]string{"queue": cfg.RabbitMQ.Queue})
-	if err := consumer.Consume(ctx, func(payload *domain.NotificationPayload) error {
-		return processor.Process(ctx, payload)
+	if err := consumer.Consume(ctx, func(msgCtx context.Context, payload *domain.NotificationPayload) error {
+		return processor.Process(msgCtx, payload)
 	}); err != nil {
 		log.Fatal(err, map[string]string{"operation": "consume_weather_notifications"})
 	}

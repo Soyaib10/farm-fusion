@@ -63,10 +63,10 @@ type owmResponse struct {
 func (c *Client) FetchForecast(ctx context.Context, lat, lon float64, locationKey string) (*domain.WeatherForecast, error) {
 	if c.cache != nil {
 		cached, err := c.cache.Get(ctx, locationKey)
-		if err == nil {
+		if err == nil && len(cached.DataPoints) > 0 {
 			return cached, nil
 		}
-		if !errors.Is(err, domain.ErrNotFound) {
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
 			c.log.Error(err, map[string]string{"operation": "forecast_cache_get", "location_key": locationKey})
 		}
 	}
@@ -106,6 +106,10 @@ func (c *Client) FetchForecast(ctx context.Context, lat, lon float64, locationKe
 	var owm owmResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&owm); err != nil {
 		return nil, fmt.Errorf("decode openweather response: %w", err)
+	}
+	if len(owm.List) == 0 {
+		// An empty forecast would silently suppress every alert for this location.
+		return nil, errors.New("openweather returned no forecast points")
 	}
 
 	points := make([]domain.ForecastPoint, len(owm.List))

@@ -1,14 +1,108 @@
 package mailer
 
 import (
+	"bufio"
+	"context"
+	"net"
 	"net/mail"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Soyaib10/farm-fusion/internal/config"
 	"github.com/Soyaib10/farm-fusion/internal/domain"
 	"github.com/google/uuid"
 )
+
+// fakeSMTPServer accepts one message and then drops the connection when the client sends QUIT.
+func fakeSMTPServer(t *testing.T) (host string, port int, accepted <-chan string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	out := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+		reply := func(s string) { _, _ = rw.WriteString(s + "\r\n"); _ = rw.Flush() }
+
+		reply("220 fake ESMTP")
+		var body strings.Builder
+		inData := false
+		for {
+			line, err := rw.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if inData {
+				if line == ".\r\n" {
+					inData = false
+					reply("250 OK queued")
+					out <- body.String()
+					continue
+				}
+				body.WriteString(line)
+				continue
+			}
+			switch cmd := strings.ToUpper(strings.TrimSpace(line)); {
+			case strings.HasPrefix(cmd, "EHLO"), strings.HasPrefix(cmd, "HELO"):
+				reply("250 fake")
+			case strings.HasPrefix(cmd, "MAIL"), strings.HasPrefix(cmd, "RCPT"):
+				reply("250 OK")
+			case cmd == "DATA":
+				inData = true
+				reply("354 go ahead")
+			case cmd == "QUIT":
+				return // Drop the connection instead of answering 221.
+			default:
+				reply("502 not implemented")
+			}
+		}
+	}()
+
+	addr := ln.Addr().(*net.TCPAddr)
+	return addr.IP.String(), addr.Port, out
+}
+
+func TestSendSucceedsWhenQuitFailsAfterAcceptedData(t *testing.T) {
+	host, port, accepted := fakeSMTPServer(t)
+	var quitErr error
+	sender := NewSender(config.SMTPConfig{
+		Host:       host,
+		Port:       port,
+		From:       "noreply@farmfusion.com",
+		RequireTLS: false,
+		Timeout:    5 * time.Second,
+	}, func(err error) { quitErr = err })
+
+	payload := &domain.NotificationPayload{
+		NotificationID: uuid.New(),
+		UserEmail:      "farmer@example.com",
+		FarmName:       "North Field",
+		Timestamp:      time.Now().UTC(),
+	}
+	if _, err := sender.SendWeatherNotification(context.Background(), payload); err != nil {
+		t.Fatalf("SendWeatherNotification() = %v, want nil after the server accepted DATA", err)
+	}
+	select {
+	case msg := <-accepted:
+		if !strings.Contains(msg, "North Field") {
+			t.Fatalf("unexpected message body: %q", msg)
+		}
+	default:
+		t.Fatal("server did not receive the message")
+	}
+	if quitErr == nil {
+		t.Fatal("expected the QUIT failure to be reported to onQuitError")
+	}
+}
 
 func TestSMTPHeaderInjectionPrevention(t *testing.T) {
 	maliciousFarmName := "North Field\r\nBcc: victim@target.com\r\nX-Injected: pwned"

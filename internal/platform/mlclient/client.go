@@ -26,7 +26,8 @@ type Client struct {
 	log     *logger.Logger
 }
 
-// NewClient constructs an ML inference HTTP Client.
+// NewClient constructs an ML inference HTTP Client. apiKey is sent on every request; the
+// configuration layer guarantees it is set (config.ValidateML).
 func NewClient(baseURL, apiKey string, httpClient *http.Client, log *logger.Logger) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -133,18 +134,27 @@ func (c *Client) postJSON(ctx context.Context, path string, reqBody any, dst any
 		return fmt.Errorf("create ml request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set(internalKeyHeader, c.apiKey)
-	}
+	req.Header.Set(internalKeyHeader, c.apiKey)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
 		c.log.Error(err, map[string]string{"operation": "ml_http_request", "path": path})
-		return fmt.Errorf("%w: ml service unreachable", domain.ErrUpstreamUnavailable)
+		return fmt.Errorf("%w: ml service unreachable: %w", domain.ErrUpstreamUnavailable, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// Drain so the keep-alive connection can be reused.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
+
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
+			resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
+			// The ML service rejected the request itself: the Go and Python input contracts disagree.
+			err := fmt.Errorf("ml service rejected request with status %d", resp.StatusCode)
+			c.log.Error(err, map[string]string{"operation": "ml_http_response", "path": path})
+			return domain.NewValidationError(map[string]string{"body": "rejected by the recommendation engine"})
+		}
+
 		err := fmt.Errorf("%w: ml service returned status %d", domain.ErrUpstreamUnavailable, resp.StatusCode)
 		c.log.Error(err, map[string]string{"operation": "ml_http_response", "path": path})
 		return err

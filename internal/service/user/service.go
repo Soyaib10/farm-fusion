@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/Soyaib10/farm-fusion/internal/domain"
@@ -12,7 +13,8 @@ import (
 // Repository defines user persistence operations needed by the user service.
 type Repository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
-	Update(ctx context.Context, user *domain.User) error
+	GetPasswordHash(ctx context.Context, id uuid.UUID) (string, error)
+	UpdateProfile(ctx context.Context, id uuid.UUID, name, email *string) (*domain.User, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	List(ctx context.Context) ([]*domain.User, error)
 }
@@ -21,6 +23,9 @@ type Repository interface {
 type UpdateInput struct {
 	Name  *string
 	Email *string
+	// CurrentPassword is the acting user's password. It is required to change an email address,
+	// so a stolen access token alone cannot take over the account's login identity.
+	CurrentPassword *string
 }
 
 // Service implements authorization-checked user profile management.
@@ -53,40 +58,50 @@ func (s *Service) Update(ctx context.Context, actor domain.Actor, targetID uuid.
 		return nil, v.Err()
 	}
 
-	var cleanName, cleanEmail string
+	var name, email *string
 	if input.Name != nil {
-		cleanName = strings.TrimSpace(*input.Name)
+		cleanName := strings.TrimSpace(*input.Name)
 		v.Check(validator.NotBlank(cleanName), "name", "must not be empty")
 		v.Check(validator.RuneCountBetween(cleanName, 2, 100), "name", "must be between 2 and 100 characters")
 		v.Check(validator.NoControlChars(cleanName), "name", "must not contain control characters")
+		name = &cleanName
 	}
 	if input.Email != nil {
-		cleanEmail = strings.ToLower(strings.TrimSpace(*input.Email))
+		cleanEmail := strings.ToLower(strings.TrimSpace(*input.Email))
 		v.Check(validator.NotBlank(cleanEmail), "email", "must not be empty")
 		v.Check(len(cleanEmail) <= 254, "email", "must not exceed 254 characters")
 		v.Check(validator.NoControlChars(cleanEmail), "email", "must not contain control characters")
 		v.Check(validator.Matches(cleanEmail, validator.EmailRX), "email", "must be a valid email address")
+		v.Check(input.CurrentPassword != nil && *input.CurrentPassword != "", "current_password",
+			"must be provided to change the email address")
+		email = &cleanEmail
 	}
 	if err := v.Err(); err != nil {
 		return nil, err
 	}
 
-	u, err := s.repo.GetByID(ctx, targetID)
+	if email != nil {
+		if err := s.verifyActorPassword(ctx, actor, *input.CurrentPassword); err != nil {
+			return nil, err
+		}
+	}
+
+	return s.repo.UpdateProfile(ctx, targetID, name, email)
+}
+
+func (s *Service) verifyActorPassword(ctx context.Context, actor domain.Actor, password string) error {
+	hash, err := s.repo.GetPasswordHash(ctx, actor.ID)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, domain.ErrNotFound) {
+			return domain.ErrUnauthorized
+		}
+		return err
 	}
-
-	if input.Name != nil {
-		u.Name = cleanName
+	u := domain.User{PasswordHash: hash}
+	if !u.CheckPassword(password) {
+		return domain.NewValidationError(map[string]string{"current_password": "is incorrect"})
 	}
-	if input.Email != nil {
-		u.Email = cleanEmail
-	}
-
-	if err := s.repo.Update(ctx, u); err != nil {
-		return nil, err
-	}
-	return u, nil
+	return nil
 }
 
 // Delete deletes a user account if actor owns the account or is an admin.

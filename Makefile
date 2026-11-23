@@ -1,4 +1,4 @@
-.PHONY: all build test test-race vet tidy clean docker-up docker-down run-api run-scheduler run-worker
+.PHONY: all build test test-race test-ml vet tidy clean docker-up docker-down run-api run-scheduler run-worker
 
 BINARY_DIR := bin
 
@@ -10,11 +10,13 @@ build:
 	go build -trimpath -o $(BINARY_DIR)/scheduler ./cmd/scheduler
 	go build -trimpath -o $(BINARY_DIR)/worker ./cmd/worker
 
-test:
-	go test ./...
+test: test-race test-ml
 
 test-race:
 	go test -race -cover ./...
+
+test-ml:
+	cd ml_service && venv/bin/python -m pytest -q
 
 vet:
 	go vet ./...
@@ -26,7 +28,7 @@ clean:
 	rm -rf $(BINARY_DIR)
 
 docker-up:
-	docker compose up -d
+	docker compose up -d postgres redis rabbitmq
 
 docker-down:
 	docker compose down

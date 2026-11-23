@@ -1,13 +1,13 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
-import joblib
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import recommendation
+from app.security import load_api_key
+from app.training import train_all
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,34 +15,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger("farm_fusion.ml")
 
-MODELS_DIR = Path(__file__).resolve().parent / "models"
-
-MODEL_FILES = {
-    "crop": "crop_model.pkl",
-    "fertilizer": "fertilizer_model.pkl",
-    "soil_encoder": "soil_encoder.pkl",
-    "crop_encoder": "crop_encoder.pkl",
-}
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.models = {}
-    logger.info("Loading ML artifacts from %s", MODELS_DIR)
-    for key, filename in MODEL_FILES.items():
-        artifact_path = (MODELS_DIR / filename).resolve()
-        if artifact_path.parent != MODELS_DIR.resolve() or not artifact_path.is_file():
-            raise RuntimeError(f"Required model artifact missing: {filename}")
-        app.state.models[key] = joblib.load(artifact_path)
-
-    logger.info("Loaded %d ML artifacts successfully", len(app.state.models))
+    app.state.api_key = load_api_key()
+    app.state.models = None
+    logger.info("Training ML models from bundled CSVs")
+    app.state.models = train_all()
+    logger.info("ML models ready")
     yield
-    app.state.models.clear()
+    app.state.models = None
 
+
+docs_enabled = os.getenv("ENV") != "production"
 
 app = FastAPI(
     title="Farm Fusion ML Service",
-    docs_url=None if os.getenv("ENV") == "production" else "/docs",
+    docs_url="/docs" if docs_enabled else None,
+    openapi_url="/openapi.json" if docs_enabled else None,
     redoc_url=None,
     lifespan=lifespan,
 )
@@ -67,10 +57,9 @@ def root():
 
 @app.get("/health")
 def health():
-    loaded = getattr(app.state, "models", {})
-    if len(loaded) != len(MODEL_FILES):
+    if getattr(app.state, "models", None) is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Models not ready",
         )
-    return {"status": "healthy", "models_loaded": len(loaded)}
+    return {"status": "healthy"}

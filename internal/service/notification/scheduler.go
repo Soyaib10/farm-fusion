@@ -11,19 +11,22 @@ import (
 	"github.com/google/uuid"
 )
 
-// FarmReader lists farms for scheduled weather evaluation.
-type FarmReader interface {
-	ListAll(ctx context.Context) ([]*domain.Farm, error)
+const (
+	targetPageSize = 500
+	// equalityTolerance is how close a forecast value must be to match an "=" rule.
+	equalityTolerance = 1e-6
+)
+
+// TargetReader pages through farms with enabled alert rules, joined with owner email and rules.
+type TargetReader interface {
+	ListAlertTargets(ctx context.Context, after domain.AlertTargetCursor, limit int) ([]*domain.AlertTarget, error)
 }
 
-// AlertReader lists configured weather alert thresholds for a farm.
-type AlertReader interface {
-	ListByFarmID(ctx context.Context, farmID uuid.UUID) ([]*domain.Weather, error)
-}
-
-// UserReader resolves the farm owner's contact details.
-type UserReader interface {
-	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
+// Outbox reserves one notification per farm per day so reruns do not publish it twice.
+type Outbox interface {
+	// Reserve returns the notification ID for (farmID, alertDate) and whether it was already published.
+	Reserve(ctx context.Context, farmID uuid.UUID, alertDate time.Time) (uuid.UUID, bool, error)
+	MarkPublished(ctx context.Context, notificationID uuid.UUID) error
 }
 
 // ForecastProvider fetches 24-hour weather forecasts for a coordinate pair.
@@ -41,120 +44,146 @@ type RunResult struct {
 	FarmsScanned           int      `json:"farms_scanned"`
 	ForecastsFetched       int      `json:"forecasts_fetched"`
 	NotificationsPublished int      `json:"notifications_published"`
+	AlreadyPublished       int      `json:"already_published"`
 	Errors                 []string `json:"errors,omitempty"`
 }
 
 // Scheduler evaluates weather forecasts against farm alert thresholds and publishes notifications.
+// Running it again on the same day is safe: farms already published for that day are skipped.
 type Scheduler struct {
-	farms     FarmReader
-	alerts    AlertReader
-	users     UserReader
+	targets   TargetReader
 	forecasts ForecastProvider
 	publisher Publisher
+	outbox    Outbox
+	location  *time.Location
 	now       func() time.Time
 }
 
-// NewScheduler constructs a weather notification Scheduler.
+// NewScheduler constructs a weather notification Scheduler. location defines the calendar day an
+// alert belongs to and the zone timestamps are shown in.
 func NewScheduler(
-	farms FarmReader,
-	alerts AlertReader,
-	users UserReader,
+	targets TargetReader,
 	forecasts ForecastProvider,
 	publisher Publisher,
+	outbox Outbox,
+	location *time.Location,
 ) *Scheduler {
+	if location == nil {
+		location = time.UTC
+	}
 	return &Scheduler{
-		farms:     farms,
-		alerts:    alerts,
-		users:     users,
+		targets:   targets,
 		forecasts: forecasts,
 		publisher: publisher,
-		now:       func() time.Time { return time.Now().UTC() },
+		outbox:    outbox,
+		location:  location,
+		now:       time.Now,
 	}
 }
 
-// RunScheduled executes one full weather check across all farms.
+// RunScheduled executes one full weather check across all farms with enabled alert rules.
 func (s *Scheduler) RunScheduled(ctx context.Context) (*RunResult, error) {
-	farms, err := s.farms.ListAll(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list farms: %w", err)
-	}
-
 	result := &RunResult{}
 	forecastByLocation := make(map[string]*domain.WeatherForecast)
+	now := s.now().In(s.location)
 
-	for _, farm := range farms {
-		if err := ctx.Err(); err != nil {
-			return result, err
+	var cursor domain.AlertTargetCursor
+	for {
+		page, err := s.targets.ListAlertTargets(ctx, cursor, targetPageSize)
+		if err != nil {
+			return result, fmt.Errorf("list alert targets: %w", err)
 		}
 
-		result.FarmsScanned++
-
-		locationKey := farm.LocationKey
-		if locationKey == "" {
-			locationKey = domain.NewLocationKey(farm.Latitude, farm.Longitude)
-		}
-
-		forecast, ok := forecastByLocation[locationKey]
-		if !ok {
-			forecast, err = s.forecasts.FetchForecast(ctx, farm.Latitude, farm.Longitude, locationKey)
-			if err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("farm %s forecast: %v", farm.ID, err))
-				continue
+		for _, target := range page {
+			if err := ctx.Err(); err != nil {
+				return result, err
 			}
-			forecastByLocation[locationKey] = forecast
-			result.ForecastsFetched++
+			s.processTarget(ctx, target, now, forecastByLocation, result)
 		}
 
-		farmAlerts, err := s.alerts.ListByFarmID(ctx, farm.ID)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("farm %s alerts: %v", farm.ID, err))
-			continue
+		if len(page) < targetPageSize {
+			return result, nil
 		}
-
-		weatherAlerts := buildWeatherAlerts(farmAlerts, forecast)
-		if len(weatherAlerts) == 0 {
-			continue
-		}
-
-		owner, err := s.users.GetByID(ctx, farm.UserID)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("farm %s user %s: %v", farm.ID, farm.UserID, err))
-			continue
-		}
-
-		payload := &domain.NotificationPayload{
-			NotificationID: uuid.New(),
-			FarmID:         farm.ID,
-			UserID:         farm.UserID,
-			UserEmail:      owner.Email,
-			FarmName:       farm.Name,
-			Location: domain.Location{
-				Latitude:  farm.Latitude,
-				Longitude: farm.Longitude,
-			},
-			Timestamp:       s.now(),
-			Alerts:          weatherAlerts,
-			ForecastSummary: summarizeForecast(forecast),
-		}
-
-		if err := s.publisher.Publish(ctx, payload); err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("farm %s publish: %v", farm.ID, err))
-			continue
-		}
-		result.NotificationsPublished++
+		last := page[len(page)-1].Farm
+		cursor = domain.AlertTargetCursor{LocationKey: last.LocationKey, FarmID: last.ID}
 	}
-
-	return result, nil
 }
 
-func buildWeatherAlerts(thresholds []*domain.Weather, forecast *domain.WeatherForecast) []domain.WeatherAlert {
+func (s *Scheduler) processTarget(
+	ctx context.Context,
+	target *domain.AlertTarget,
+	now time.Time,
+	forecastByLocation map[string]*domain.WeatherForecast,
+	result *RunResult,
+) {
+	farm := target.Farm
+	result.FarmsScanned++
+
+	// Always derive the cache key in Go; stored keys may come from SQL rounding (migration 005).
+	locationKey := domain.NewLocationKey(farm.Latitude, farm.Longitude)
+
+	forecast, ok := forecastByLocation[locationKey]
+	if !ok {
+		var err error
+		forecast, err = s.forecasts.FetchForecast(ctx, farm.Latitude, farm.Longitude, locationKey)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("farm %s forecast: %v", farm.ID, err))
+			return
+		}
+		forecastByLocation[locationKey] = forecast
+		result.ForecastsFetched++
+	}
+
+	weatherAlerts := buildWeatherAlerts(target.Alerts, forecast, s.location)
+	if len(weatherAlerts) == 0 {
+		return
+	}
+
+	notificationID, published, err := s.outbox.Reserve(ctx, farm.ID, now)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("farm %s reserve: %v", farm.ID, err))
+		return
+	}
+	if published {
+		result.AlreadyPublished++
+		return
+	}
+
+	payload := &domain.NotificationPayload{
+		NotificationID: notificationID,
+		FarmID:         farm.ID,
+		UserID:         farm.UserID,
+		UserEmail:      target.OwnerEmail,
+		FarmName:       farm.Name,
+		Location: domain.Location{
+			Latitude:  farm.Latitude,
+			Longitude: farm.Longitude,
+		},
+		Timestamp:       now,
+		Alerts:          weatherAlerts,
+		ForecastSummary: summarizeForecast(forecast),
+	}
+
+	if err := s.publisher.Publish(ctx, payload); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("farm %s publish: %v", farm.ID, err))
+		return
+	}
+	result.NotificationsPublished++
+
+	if err := s.outbox.MarkPublished(ctx, notificationID); err != nil {
+		// The message is on the queue. A rerun republishes the same ID, which the worker deduplicates.
+		result.Errors = append(result.Errors, fmt.Sprintf("farm %s mark published: %v", farm.ID, err))
+	}
+}
+
+func buildWeatherAlerts(thresholds []*domain.Weather, forecast *domain.WeatherForecast, loc *time.Location) []domain.WeatherAlert {
 	alerts := make([]domain.WeatherAlert, 0, len(thresholds))
 	for _, threshold := range thresholds {
 		if !threshold.IsEnabled {
 			continue
 		}
 
-		ranges := matchingRanges(threshold, forecast.DataPoints)
+		ranges := matchingRanges(threshold, forecast.DataPoints, loc)
 		if len(ranges) == 0 {
 			continue
 		}
@@ -171,7 +200,7 @@ func buildWeatherAlerts(thresholds []*domain.Weather, forecast *domain.WeatherFo
 	return alerts
 }
 
-func matchingRanges(threshold *domain.Weather, points []domain.ForecastPoint) []domain.AlertRange {
+func matchingRanges(threshold *domain.Weather, points []domain.ForecastPoint, loc *time.Location) []domain.AlertRange {
 	var (
 		ranges  []domain.AlertRange
 		current []domain.ForecastPoint
@@ -194,8 +223,8 @@ func matchingRanges(threshold *domain.Weather, points []domain.ForecastPoint) []
 			}
 		}
 
-		start := current[0].Timestamp
-		end := current[len(current)-1].Timestamp.Add(3 * time.Hour)
+		start := current[0].Timestamp.In(loc)
+		end := current[len(current)-1].Timestamp.Add(3 * time.Hour).In(loc)
 		ranges = append(ranges, domain.AlertRange{
 			Start:         start,
 			End:           end,
@@ -254,7 +283,8 @@ func compare(actual float64, operator string, expected float64) bool {
 	case ">=":
 		return actual >= expected
 	case "=", "==":
-		return actual == expected
+		// Forecast values are decoded JSON floats; 30.5 can arrive as 30.499999999.
+		return math.Abs(actual-expected) <= equalityTolerance*math.Max(1, math.Abs(expected))
 	default:
 		return false
 	}

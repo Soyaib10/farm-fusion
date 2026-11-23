@@ -62,6 +62,73 @@ func (m *memUserStore) GetByID(_ context.Context, id uuid.UUID) (*domain.User, e
 	return &cp, nil
 }
 
+func (m *memUserStore) RecordLoginFailure(_ context.Context, id uuid.UUID, maxFailures int, lockout time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u := m.byID[id]
+	u.FailedLoginCount++
+	if u.FailedLoginCount >= maxFailures {
+		until := time.Now().UTC().Add(lockout)
+		u.LockedUntil = &until
+	}
+	return nil
+}
+
+func (m *memUserStore) ResetLoginFailures(_ context.Context, id uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u := m.byID[id]
+	u.FailedLoginCount = 0
+	u.LockedUntil = nil
+	return nil
+}
+
+func (m *memUserStore) delete(id uuid.UUID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if u, ok := m.byID[id]; ok {
+		delete(m.email, strings.ToLower(u.Email))
+		delete(m.byID, id)
+	}
+}
+
+type memSessionStore struct {
+	users   *memUserStore
+	mu      sync.Mutex
+	revoked map[string]time.Time
+}
+
+func (m *memSessionStore) GetSessionState(_ context.Context, userID uuid.UUID, tokenID string) (domain.SessionState, error) {
+	m.users.mu.Lock()
+	u, ok := m.users.byID[userID]
+	m.users.mu.Unlock()
+	if !ok {
+		return domain.SessionState{}, domain.ErrNotFound
+	}
+	m.mu.Lock()
+	_, revoked := m.revoked[tokenID]
+	m.mu.Unlock()
+	return domain.SessionState{Role: u.Role, TokenVersion: u.TokenVersion, TokenRevoked: revoked}, nil
+}
+
+func (m *memSessionStore) RevokeAccessToken(_ context.Context, tokenID string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.revoked[tokenID] = expiresAt
+	return nil
+}
+
+func (m *memSessionStore) BumpTokenVersion(_ context.Context, userID uuid.UUID) error {
+	m.users.mu.Lock()
+	defer m.users.mu.Unlock()
+	u, ok := m.users.byID[userID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	u.TokenVersion++
+	return nil
+}
+
 type memTokenStore struct {
 	mu     sync.Mutex
 	byHash map[string]*domain.RefreshToken
@@ -79,27 +146,29 @@ func (m *memTokenStore) Save(_ context.Context, t *domain.RefreshToken) error {
 	return nil
 }
 
-func (m *memTokenStore) GetByHash(_ context.Context, h string) (*domain.RefreshToken, error) {
+func (m *memTokenStore) Rotate(_ context.Context, oldHash string, next *domain.RefreshToken) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t, ok := m.byHash[h]
+	old, ok := m.byHash[oldHash]
 	if !ok {
-		return nil, domain.ErrNotFound
+		return domain.ErrNotFound
 	}
-	cp := *t
-	return &cp, nil
-}
-
-func (m *memTokenStore) ConsumeActive(_ context.Context, h string) (*domain.RefreshToken, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	t, ok := m.byHash[h]
-	if !ok || t.Revoked || time.Now().UTC().After(t.ExpiresAt) {
-		return nil, domain.ErrNotFound
+	if old.Revoked {
+		for _, t := range m.byHash {
+			if t.UserID == old.UserID {
+				t.Revoked = true
+			}
+		}
+		return domain.ErrTokenRevoked
 	}
-	t.Revoked = true
-	cp := *t
-	return &cp, nil
+	if !time.Now().Before(old.ExpiresAt) {
+		return domain.ErrTokenExpired
+	}
+	old.Revoked = true
+	next.UserID = old.UserID
+	cp := *next
+	m.byHash[next.TokenHash] = &cp
+	return nil
 }
 
 func (m *memTokenStore) RevokeByHash(_ context.Context, h string) error {
@@ -132,16 +201,42 @@ func testAuthConfig() config.AuthConfig {
 	}
 }
 
-func TestAuthRegisterLoginRotateAndReplayDetection(t *testing.T) {
-	ctx := context.Background()
+type testEnv struct {
+	svc    *Service
+	tm     *TokenManager
+	users  *memUserStore
+	tokens *memTokenStore
+}
+
+func newTestEnv() testEnv {
+	cfg := testAuthConfig()
 	users := newMemUserStore()
 	tokens := newMemTokenStore()
-	cfg := testAuthConfig()
+	sessions := &memSessionStore{users: users, revoked: make(map[string]time.Time)}
 	tm := NewTokenManager(cfg)
-	svc := NewService(users, tokens, tm, cfg)
+	return testEnv{svc: NewService(users, tokens, sessions, tm, cfg), tm: tm, users: users, tokens: tokens}
+}
+
+func (e testEnv) registerAndLogin(t *testing.T, email string) *AuthResult {
+	t.Helper()
+	ctx := context.Background()
+	if err := e.svc.Register(ctx, RegisterInput{Name: "Zihad", Email: email, Password: "StrongPassword1!"}); err != nil {
+		t.Fatalf("Register() unexpected error: %v", err)
+	}
+	res, err := e.svc.Login(ctx, LoginInput{Email: email, Password: "StrongPassword1!"})
+	if err != nil {
+		t.Fatalf("Login() unexpected error: %v", err)
+	}
+	return res
+}
+
+func TestAuthRegisterLoginRotateAndReplayDetection(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv()
+	svc := env.svc
 
 	// 1. Weak password rejected
-	if _, err := svc.Register(ctx, RegisterInput{
+	if err := svc.Register(ctx, RegisterInput{
 		Name:     "Zihad",
 		Email:    "zihad@example.com",
 		Password: "weak",
@@ -150,28 +245,31 @@ func TestAuthRegisterLoginRotateAndReplayDetection(t *testing.T) {
 	}
 
 	// 2. Valid registration normalizes email and assigns RoleUser
-	regRes, err := svc.Register(ctx, RegisterInput{
+	if err := svc.Register(ctx, RegisterInput{
 		Name:     "Zihad",
 		Email:    "  ZIHAD@Example.COM ",
 		Password: "StrongPassword1!",
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("Register() unexpected error: %v", err)
 	}
-	if regRes.User.Email != "zihad@example.com" {
-		t.Fatalf("got email %q, want normalized lowercase", regRes.User.Email)
+	stored, err := env.users.GetByEmail(ctx, "zihad@example.com")
+	if err != nil {
+		t.Fatalf("registered user not stored under normalized email: %v", err)
 	}
-	if regRes.User.Role != domain.RoleUser {
-		t.Fatalf("got role %q, want %q", regRes.User.Role, domain.RoleUser)
+	if stored.Role != domain.RoleUser {
+		t.Fatalf("got role %q, want %q", stored.Role, domain.RoleUser)
 	}
 
-	// 3. Duplicate email rejected with domain.ErrAlreadyExists
-	if _, err := svc.Register(ctx, RegisterInput{
+	// 3. Duplicate email answers exactly like a new one and does not overwrite the account
+	if err := svc.Register(ctx, RegisterInput{
 		Name:     "Other",
 		Email:    "zihad@example.com",
-		Password: "StrongPassword1!",
-	}); !errors.Is(err, domain.ErrAlreadyExists) {
-		t.Fatalf("got err %v, want ErrAlreadyExists", err)
+		Password: "OtherPassword1!",
+	}); err != nil {
+		t.Fatalf("duplicate Register() got %v, want nil (no enumeration)", err)
+	}
+	if _, err := svc.Login(ctx, LoginInput{Email: "zihad@example.com", Password: "OtherPassword1!"}); !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Fatalf("duplicate registration must not change the password, got %v", err)
 	}
 
 	// 4. Login issues verifiable JWT and refresh token
@@ -183,11 +281,11 @@ func TestAuthRegisterLoginRotateAndReplayDetection(t *testing.T) {
 		t.Fatalf("Login() unexpected error: %v", err)
 	}
 
-	actor, err := tm.VerifyAccessToken(loginRes.AccessToken)
+	actor, err := svc.Authenticate(ctx, loginRes.AccessToken)
 	if err != nil {
-		t.Fatalf("VerifyAccessToken() error: %v", err)
+		t.Fatalf("Authenticate() error: %v", err)
 	}
-	if actor.ID != regRes.User.ID || actor.Role != domain.RoleUser {
+	if actor.ID != stored.ID || actor.Role != domain.RoleUser {
 		t.Fatalf("unexpected actor %+v", actor)
 	}
 
@@ -206,6 +304,106 @@ func TestAuthRegisterLoginRotateAndReplayDetection(t *testing.T) {
 	}
 	if _, err := svc.Refresh(ctx, rotated.RefreshToken); !errors.Is(err, domain.ErrTokenRevoked) {
 		t.Fatalf("expected active session to be revoked after token replay, got %v", err)
+	}
+}
+
+func TestAccessTokenRejectedAfterAccountDeletion(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv()
+	res := env.registerAndLogin(t, "gone@example.com")
+
+	if _, err := env.svc.Authenticate(ctx, res.AccessToken); err != nil {
+		t.Fatalf("Authenticate() before delete: %v", err)
+	}
+
+	env.users.delete(res.User.ID)
+
+	if _, err := env.svc.Authenticate(ctx, res.AccessToken); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("Authenticate() after delete got %v, want ErrUnauthorized", err)
+	}
+	if _, err := env.tm.VerifyAccessToken(res.AccessToken); err != nil {
+		t.Fatal("test precondition: the JWT itself is still cryptographically valid")
+	}
+}
+
+func TestAuthenticateUsesRoleFromDatabase(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv()
+	res := env.registerAndLogin(t, "demoted@example.com")
+
+	// A token minted with role=admin for this user does not grant admin while the row says user.
+	forged := *res.User
+	forged.Role = domain.RoleAdmin
+	adminToken, err := env.tm.IssueAccessToken(&forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor, err := env.svc.Authenticate(ctx, adminToken)
+	if err != nil {
+		t.Fatalf("Authenticate(): %v", err)
+	}
+	if actor.IsAdmin() {
+		t.Fatal("role must come from the users row, not the token claim")
+	}
+}
+
+func TestLogoutRevokesAccessTokenAndLogoutAllRevokesEverything(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv()
+
+	first := env.registerAndLogin(t, "farmer@example.com")
+	second, err := env.svc.Login(ctx, LoginInput{Email: "farmer@example.com", Password: "StrongPassword1!"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Single-device logout kills that device's access token only.
+	if err := env.svc.Logout(ctx, first.RefreshToken, first.AccessToken); err != nil {
+		t.Fatalf("Logout(): %v", err)
+	}
+	if _, err := env.svc.Authenticate(ctx, first.AccessToken); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("logged-out access token got %v, want ErrUnauthorized", err)
+	}
+	actor, err := env.svc.Authenticate(ctx, second.AccessToken)
+	if err != nil {
+		t.Fatalf("other device must stay logged in, got %v", err)
+	}
+
+	// Log out everywhere.
+	if err := env.svc.LogoutAll(ctx, actor); err != nil {
+		t.Fatalf("LogoutAll(): %v", err)
+	}
+	if _, err := env.svc.Authenticate(ctx, second.AccessToken); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("access token after LogoutAll got %v, want ErrUnauthorized", err)
+	}
+	if _, err := env.svc.Refresh(ctx, second.RefreshToken); err == nil {
+		t.Fatal("refresh token must be revoked after LogoutAll")
+	}
+
+	// A fresh login works and carries the new token version.
+	fresh, err := env.svc.Login(ctx, LoginInput{Email: "farmer@example.com", Password: "StrongPassword1!"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.Authenticate(ctx, fresh.AccessToken); err != nil {
+		t.Fatalf("fresh login after LogoutAll: %v", err)
+	}
+}
+
+func TestLoginLocksAccountAfterRepeatedFailures(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv()
+	env.registerAndLogin(t, "target@example.com")
+
+	for i := 0; i < maxFailedLogins; i++ {
+		if _, err := env.svc.Login(ctx, LoginInput{Email: "target@example.com", Password: "WrongGuess1!"}); !errors.Is(err, domain.ErrInvalidCredentials) {
+			t.Fatalf("attempt %d got %v, want ErrInvalidCredentials", i+1, err)
+		}
+	}
+
+	// The correct password is refused while locked, with the same error as a wrong one.
+	if _, err := env.svc.Login(ctx, LoginInput{Email: "target@example.com", Password: "StrongPassword1!"}); !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Fatalf("locked account login got %v, want ErrInvalidCredentials", err)
 	}
 }
 

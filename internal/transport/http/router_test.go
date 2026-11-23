@@ -23,8 +23,8 @@ import (
 
 type nopAuthSvc struct{}
 
-func (nopAuthSvc) Register(context.Context, authsvc.RegisterInput) (*authsvc.AuthResult, error) {
-	return nil, domain.ErrInvalidCredentials
+func (nopAuthSvc) Register(context.Context, authsvc.RegisterInput) error {
+	return domain.ErrInvalidCredentials
 }
 func (nopAuthSvc) Login(context.Context, authsvc.LoginInput) (*authsvc.AuthResult, error) {
 	return nil, domain.ErrInvalidCredentials
@@ -32,7 +32,27 @@ func (nopAuthSvc) Login(context.Context, authsvc.LoginInput) (*authsvc.AuthResul
 func (nopAuthSvc) Refresh(context.Context, string) (*authsvc.AuthResult, error) {
 	return nil, domain.ErrUnauthorized
 }
-func (nopAuthSvc) Logout(context.Context, string) error { return nil }
+func (nopAuthSvc) Logout(context.Context, string, string) error  { return nil }
+func (nopAuthSvc) LogoutAll(context.Context, domain.Actor) error { return nil }
+
+// tokenAuthenticator verifies JWTs and checks the subject against a set of existing users,
+// standing in for authsvc.Service.Authenticate backed by the database.
+type tokenAuthenticator struct {
+	tm    *authsvc.TokenManager
+	users map[uuid.UUID]domain.Role
+}
+
+func (a tokenAuthenticator) Authenticate(_ context.Context, raw string) (domain.Actor, error) {
+	tok, err := a.tm.VerifyAccessToken(raw)
+	if err != nil {
+		return domain.Actor{}, domain.ErrUnauthorized
+	}
+	role, ok := a.users[tok.UserID]
+	if !ok {
+		return domain.Actor{}, domain.ErrUnauthorized
+	}
+	return domain.Actor{ID: tok.UserID, Role: role, TokenID: tok.TokenID}, nil
+}
 
 type stubUserSvc struct {
 	self *domain.User
@@ -118,14 +138,18 @@ func TestRouterSecurityHeadersRBACAndRateLimit(t *testing.T) {
 	tm := authsvc.NewTokenManager(cfg.Auth)
 	userID := uuid.New()
 	selfUser := &domain.User{ID: userID, Name: "Farmer", Email: "farmer@example.com", Role: domain.RoleUser}
+	authenticator := tokenAuthenticator{tm: tm, users: map[uuid.UUID]domain.Role{userID: domain.RoleUser}}
 
-	authLimiter := middleware.NewRateLimiter(0.01, 2, false, log)
+	authLimiter, err := middleware.NewRateLimiter(0.01, 2, nil, log)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer authLimiter.Close()
 
 	router := NewRouter(Dependencies{
 		Config:         cfg,
 		Logger:         log,
-		TokenVerifier:  tm,
+		Authenticator:  authenticator,
 		Health:         handler.NewHealthHandler(nil, log),
 		Auth:           handler.NewAuthHandler(nopAuthSvc{}, log),
 		User:           handler.NewUserHandler(stubUserSvc{self: selfUser}, log),
@@ -172,6 +196,19 @@ func TestRouterSecurityHeadersRBACAndRateLimit(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("authenticated /users/me = %d, want 200", rec.Code)
 	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("authenticated /users/me Cache-Control = %q, want no-store", rec.Header().Get("Cache-Control"))
+	}
+
+	// A validly signed token for a user that no longer exists is rejected.
+	ghostToken, _ := tm.IssueAccessToken(&domain.User{ID: uuid.New(), Role: domain.RoleAdmin})
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+	req.Header.Set("Authorization", "Bearer "+ghostToken)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("deleted admin GET /users = %d, want 401", rec.Code)
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
 	req.Header.Set("Authorization", "Bearer "+userToken)
@@ -189,7 +226,7 @@ func TestRouterSecurityHeadersRBACAndRateLimit(t *testing.T) {
 		t.Fatalf("non-owner DELETE /users/{other} = %d, want 403", rec.Code)
 	}
 
-	// 4. Auth rate limiter blocks brute force even if attacker spoofs X-Forwarded-For (TrustProxy=false)
+	// 4. Auth rate limiter blocks brute force even if attacker spoofs X-Forwarded-For (no trusted proxies)
 	for i := 1; i <= 3; i++ {
 		body := bytes.NewBufferString(`{"email":"a@b.com","password":"pw"}`)
 		req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", body)

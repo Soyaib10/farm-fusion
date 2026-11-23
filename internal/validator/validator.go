@@ -92,9 +92,10 @@ func Between(f, minVal, maxVal float64) bool {
 	return Finite(f) && f >= minVal && f <= maxVal
 }
 
-// StrongPassword checks length (8..72 bytes for bcrypt) and requires at least one letter and one digit or symbol.
+// StrongPassword checks length (at least 8 characters, at most 72 bytes for bcrypt) and requires
+// at least one letter and one digit or symbol.
 func StrongPassword(pw string) (bool, string) {
-	if len(pw) < 8 {
+	if utf8.RuneCountInString(pw) < 8 {
 		return false, "must be at least 8 characters long"
 	}
 	if len(pw) > 72 {

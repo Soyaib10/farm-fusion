@@ -26,8 +26,8 @@ debug
 
 # Environment and secret files
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 config.yaml
 config.yml
 config.json
@@ -91,3 +91,6 @@ coverage.xml
 .ipynb_checkpoints
 .python-version
 .mypy_cache/
+*.pkl
+*.joblib
+ml_service/app/models/

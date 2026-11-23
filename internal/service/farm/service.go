@@ -78,14 +78,15 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, input UpsertInpu
 	return f, nil
 }
 
-// GetByID retrieves a farm and verifies ownership by userID.
+// GetByID retrieves a farm and verifies ownership by userID. A farm owned by someone else is
+// reported as domain.ErrNotFound so callers cannot probe which farm IDs exist.
 func (s *Service) GetByID(ctx context.Context, farmID, userID uuid.UUID) (*domain.Farm, error) {
 	f, err := s.repo.GetByID(ctx, farmID)
 	if err != nil {
 		return nil, err
 	}
 	if f.UserID != userID {
-		return nil, domain.ErrForbidden
+		return nil, domain.ErrNotFound
 	}
 	return f, nil
 }
@@ -107,7 +108,7 @@ func (s *Service) Update(ctx context.Context, farmID, userID uuid.UUID, input Up
 		return nil, err
 	}
 	if existing.UserID != userID {
-		return nil, domain.ErrForbidden
+		return nil, domain.ErrNotFound
 	}
 
 	updated := &domain.Farm{
@@ -134,7 +135,7 @@ func (s *Service) Delete(ctx context.Context, farmID, userID uuid.UUID) error {
 		return err
 	}
 	if existing.UserID != userID {
-		return domain.ErrForbidden
+		return domain.ErrNotFound
 	}
 	return s.repo.Delete(ctx, farmID)
 }

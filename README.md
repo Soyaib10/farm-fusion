@@ -18,7 +18,7 @@ Farmers face critical decisions daily:
 
 ### The Solution
 An intelligent system that:
-- Recommends optimal crops based on soil conditions (99.32% accuracy)
+- Recommends optimal crops based on soil conditions (99.5% mean 5-fold cross-validated accuracy on the bundled dataset)
 - Suggests precise fertilizer types based on soil and crop data
 - Monitors weather 24/7 and sends automated alerts before dangerous conditions
 - Scales to handle thousands of farms with minimal latency
@@ -61,12 +61,13 @@ An intelligent system that:
 |--------|----------|------|-------------|
 | GET | `/healthz` | No | Liveness probe |
 | GET | `/readyz` | No | Readiness probe (verifies DB connectivity) |
-| POST | `/api/v1/auth/register` | No | Register a new user |
-| POST | `/api/v1/auth/login` | No | Login and receive tokens |
+| POST | `/api/v1/auth/register` | No | Register a new user. Always returns `202` with the same body, whether or not the email is taken |
+| POST | `/api/v1/auth/login` | No | Login and receive tokens. 5 failed attempts lock the account for 15 minutes |
 | POST | `/api/v1/auth/refresh` | No | Rotate refresh token and issue new token pair |
-| POST | `/api/v1/auth/logout` | No | Revoke refresh token |
+| POST | `/api/v1/auth/logout` | No | Revoke the refresh token, and the access token if sent as `Authorization: Bearer` |
+| POST | `/api/v1/auth/logout-all` | Yes | Revoke every session for the caller, including outstanding access tokens |
 | GET | `/api/v1/users/me` | Yes | Get current user profile |
-| PATCH | `/api/v1/users/me` | Yes | Update current user profile |
+| PATCH | `/api/v1/users/me` | Yes | Update current user profile. Changing `email` requires `current_password` |
 | DELETE | `/api/v1/users/me` | Yes | Delete current user account |
 | GET | `/api/v1/users` | Admin | List all users (admin role required) |
 | GET | `/api/v1/users/{id}` | Owner/Admin | Get user by ID |
@@ -92,9 +93,11 @@ Called by the Go API via `ML_SERVICE_URL`. Not exposed as part of the main REST 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/` | Service status |
-| GET | `/health` | Health check and model load status |
+| GET | `/health` | Returns `503` until the models are trained |
 | POST | `/predict/crop` | Crop recommendation inference |
 | POST | `/predict/fertilizer` | Fertilizer recommendation inference |
+
+Both `/predict` routes require the `X-Internal-API-Key` header. The service and the Go API refuse to start unless `ML_API_KEY` is at least 32 bytes and is not the `.env.example` placeholder. Input bounds come from `ml_service/feature_bounds.json`, which the Go service is tested against.
 
 ---
 
@@ -141,17 +144,17 @@ Go Backend                    Python ML Service
     │                              │
 
 
-Model Training (Offline):
+Model Training (at service startup):
 
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│ CSV Dataset  │───▶│ Preprocess   │───▶│ Train RF     │───▶│ Save .pkl   │
-│ 2200 samples │    │ • Normalize  │    │ • 100 trees  │    │ • Model      │
-└──────────────┘    │ • Encode     │    │ • Max depth  │    │ • Encoders   │
-                    └──────────────┘    └──────────────┘    └──────────────┘
+┌──────────────┐    ┌──────────────────┐    ┌──────────────┐    ┌──────────────┐
+│ CSV Dataset  │───▶│ Stratified 5-fold│───▶│ Accuracy gate│───▶│ Refit on all │
+│ (bundled)    │    │ CV, encoder per  │    │ (refuse to   │    │ rows, serve  │
+└──────────────┘    │ fold             │    │  start)      │    │ from memory  │
+                    └──────────────────┘    └──────────────┘    └──────────────┘
 ```
 
 **What We Did:**
-- Trained various models and chose the best performer on agricultural datasets
+- Train a Random Forest per task from the CSVs when the service starts. No model files are loaded, so nothing is unpickled
 - Created a separate Python FastAPI service for ML inference
 - Implemented HTTP client in Go to call the ML service
 - Added confidence thresholds and warnings
@@ -206,13 +209,14 @@ Tree 100: Rice (88%)
 Result: Rice (87 trees voted Rice)
 ```
 
-We tested multiple models (Decision Tree, SVM, KNN, Logistic Regression) and Random Forest consistently gave the best results.
+**Model Performance** (mean stratified 5-fold cross-validated accuracy, from `ml_service/metrics/model_report.json`, scikit-learn 1.9.1):
 
-**Model Performance:**
-- **Crop Recommendation:** 99.32% accuracy (2,200 samples)
-- **Fertilizer Recommendation:** ~95% accuracy (variable by soil type)
-- **Inference Time:** <50ms per prediction
-- **Model Size:** ~2MB total
+| Model | Rows | Classes | Accuracy (std) | Startup gate |
+|-------|------|---------|----------------|--------------|
+| Crop | 2,200 | 22, 100 rows each | 0.9955 (0.0032) | 0.97 |
+| Fertilizer | 99 | 7, 7 to 22 rows each | 0.9800 (0.0245) | 0.90 |
+
+The fertilizer set is small. Two classes (`17-17-17`, `10-26-26`) have only 7 rows, so treat its score as a rough estimate. Both models use `RandomForestClassifier(n_estimators=100, random_state=42)` with no feature scaling or depth limit. Regenerate the report with `python train_models.py`.
 
 ---
 
@@ -319,12 +323,21 @@ Performance gain: 20x faster on cache hits
 │                    WORKER CONSUMER                              │
 ├─────────────────────────────────────────────────────────────────┤
 │ 1. Receive message from queue                                   │
-│ 2. Generate HTML email (alerts + forecast summary)              │
-│ 3. Send via SMTP                                                │
-│ 4. Log to notification_log table                                │
-│ 5. Acknowledge message                                          │
+│ 2. Claim notification_id in notification_log (skip if sent)     │
+│ 3. Generate HTML email (alerts + forecast summary)              │
+│ 4. Send via SMTP to the user's current email                    │
+│ 5. Mark sent, then acknowledge message                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+**Delivery guarantees:**
+- The scheduler reserves one `notification_outbox` row per farm per day before publishing. A rerun the same day, or a second scheduler replica, does not publish again. A Postgres advisory lock lets only one scheduler run at a time.
+- A failed run is retried after 1, 5, and 15 minutes. With `SCHEDULER_RUN_ONCE=true` the process exits non-zero if any farm failed.
+- The worker dedupes on `notification_id`, so a redelivered message does not send a second email.
+- Retries are republished with publisher confirms before the original is acked. After the retry limit a message is dead-lettered to the DLQ, and the worker logs DLQ depth every 5 minutes.
+- The scheduler runs at `SCHEDULER_HOUR:00` in `SCHEDULER_TIMEZONE`, and stays on that local hour across DST changes.
+
+> **Upgrading an existing RabbitMQ:** the main queue now declares dead-letter arguments. RabbitMQ refuses to redeclare an existing queue with different arguments, so drain and delete the old `weather.notifications` queue (for example in the management UI) before starting the new worker or scheduler.
 
 **Why Scheduled at 5 AM, Not Real-Time?**
 
@@ -404,7 +417,7 @@ POST /api/v1/auth/register
     ├─▶ Validate Input (email, strong password, no control chars)
     ├─▶ Hash Password (bcrypt, cost=12)
     ├─▶ Store User in PostgreSQL (default role: "user")
-    └─▶ Return User Profile
+    └─▶ Return 202 with a generic message (same response if the email already exists)
 
 POST /api/v1/auth/login (rate-limited per IP)
     │
@@ -421,20 +434,23 @@ POST /api/v1/auth/refresh
     └─▶ Issue New Access Token + Rotated Refresh Token
 ```
 
+Every authenticated request also loads the user's session state from PostgreSQL: the role, a token version, and whether the token's `jti` was revoked. A deleted user, a logged-out token, or a token issued before `logout-all` is rejected immediately, and a role change takes effect on the next request.
+
 **Why this approach:**
-- **JWT for stateless auth:** No session storage needed, scales horizontally
+- **Signed JWT plus a session-state lookup:** The signature check is cheap, and one indexed query makes logout, deletion, and role changes take effect before the token expires
 - **Atomic refresh token rotation in DB:** Enables logout, single-use rotation, and compromised-token replay detection
 - **Short access token expiry (15 min):** Limits damage if a token is stolen
 - **Bcrypt (cost=12) + constant-time login:** Purpose-built for passwords with built-in salt, plus dummy bcrypt verification on unknown emails to prevent timing-based user enumeration
-- **Per-IP token-bucket rate limiting:** Protects `/api/v1/auth/*` against credential stuffing and brute-force attacks
+- **Per-IP token-bucket rate limiting plus per-account lockout:** Protects `/api/v1/auth/*` against credential stuffing and brute-force attacks. The IP limiter is per process; with several API replicas, put a shared limiter in front. `X-Forwarded-For` is only honored from `TRUSTED_PROXY_CIDRS`
 
 **Alternatives considered:**
-- **Session-based auth:** Requires a DB or Redis lookup on every single request — adds latency and a stateful dependency
+- **Opaque server-side sessions:** Equivalent lookup cost to the session-state check above, but the JWT keeps the claims verifiable without the database
 - **OAuth2:** Adds significant complexity for no real benefit without third-party login requirements
 - **API Keys:** No expiration, harder to rotate, less secure for end-user auth
 
 **Future Enhancements:**
 - Add 2FA (TOTP)
+- Email verification on register and on email change
 - Password reset via email
 - OAuth2 for social login
 
@@ -490,7 +506,7 @@ POST /api/v1/farms
 
 ```bash
 - Go 1.25+
-- Python 3.10+
+- Python 3.14 (the hashed lockfile is resolved for it)
 - PostgreSQL 14+
 - Redis 6+
 - RabbitMQ 3.9+
@@ -498,23 +514,30 @@ POST /api/v1/farms
 
 ### Environment Variables
 
-Copy `.env.example` to `.env` and fill in the values:
+Copy `.env.example` to `.env` and fill in the values. The placeholder `JWT_SECRET` and `ML_API_KEY` are rejected at startup, and `docker-compose.yml` has no fallback passwords. Key settings:
 
 ```env
-# Database
-DATABASE_URL=postgres://postgres:password@127.0.0.1:5432/farm_fusion?sslmode=disable
+# Local infrastructure credentials (used by docker-compose.yml)
+POSTGRES_PASSWORD=...
+RABBITMQ_USER=farmfusion
+RABBITMQ_PASS=...
+REDIS_PASSWORD=...
+
+# Database (production requires sslmode=verify-full)
+DATABASE_URL=postgres://postgres:<POSTGRES_PASSWORD>@127.0.0.1:5432/farm_fusion?sslmode=disable
 
 # Redis
 REDIS_ADDR=127.0.0.1:6379
 
-# RabbitMQ
-RABBITMQ_URL=amqp://guest:guest@127.0.0.1:5672/
+# RabbitMQ (guest is rejected in production)
+RABBITMQ_URL=amqp://farmfusion:<RABBITMQ_PASS>@127.0.0.1:5672/
 
-# ML Service
+# ML Service (generate with: openssl rand -hex 32)
 ML_SERVICE_URL=http://127.0.0.1:8000
+ML_API_KEY=...
 
-# Auth (minimum 32 bytes; generate with: openssl rand -hex 32)
-JWT_SECRET=replace-with-a-secure-random-32-byte-secret-key
+# Auth (generate with: openssl rand -hex 32)
+JWT_SECRET=...
 
 # Weather
 OPENWEATHER_API_KEY=your-api-key
@@ -529,7 +552,13 @@ SMTP_FROM=your@gmail.com
 # Server
 SERVER_PORT=8080
 ENV=development
+
+# Scheduler
+SCHEDULER_HOUR=5
+SCHEDULER_TIMEZONE=Asia/Dhaka
 ```
+
+`./run.sh` does all of the steps below in one go: it starts Postgres, Redis, and RabbitMQ with Docker, applies migrations, then starts the ML service, API, worker, and scheduler, and stops everything if any of them exits.
 
 ### 1. Clone & Configure
 
@@ -553,10 +582,14 @@ for f in migrations/*.up.sql; do psql -d farm_fusion -f "$f"; done
 cd ml_service
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
-python train_models.py  # First time only
+pip install --require-hashes -r requirements.txt
+export ML_API_KEY=...   # same value as in .env
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
+
+The service trains both models at startup (a few seconds) and refuses to start if either misses its accuracy gate. Or run it in Docker: `docker compose --profile ml up -d ml`.
+
+To change dependencies, edit `requirements.in` or `requirements-dev.in`, then run `pip-compile --generate-hashes --allow-unsafe --strip-extras -o requirements.txt requirements.in` (and the same for the dev file).
 
 ### 4. Start Go Backend
 
@@ -568,7 +601,7 @@ make build
 ### 5. Start Background Services
 
 ```bash
-# Terminal 1 — Scheduler (runs daily at 5 AM)
+# Terminal 1 — Scheduler (runs daily at SCHEDULER_HOUR in SCHEDULER_TIMEZONE)
 ./bin/scheduler
 
 # Terminal 2 — Worker (consumes RabbitMQ queue)
@@ -609,9 +642,10 @@ farm-fusion/
 │   └── transport/
 │       └── http/       # Chi router, hardened http.Server, middleware & REST handlers
 ├── migrations/         # Numbered PostgreSQL up/down SQL migrations
-├── ml_service/         # Python FastAPI ML inference service & training pipeline
+├── ml_service/         # Python FastAPI ML service, in-process training & pytest suite
+├── .github/workflows/  # CI: gofmt, go vet, go test -race, hashed pip install, pytest
 ├── Makefile            # Build, vet, test & run targets
-└── docker-compose.yml  # Loopback-bound local Postgres, Redis & RabbitMQ
+└── docker-compose.yml  # Loopback-bound local Postgres, Redis, RabbitMQ (+ ML under the `ml` profile)
 ```
 
 ---
@@ -641,12 +675,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 3. Commit your changes (`git commit -m 'Add amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
-
----
-
-## License
-
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
 ---
 

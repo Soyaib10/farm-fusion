@@ -15,6 +15,7 @@ var (
 	ErrTokenExpired        = errors.New("token expired")
 	ErrTokenRevoked        = errors.New("token revoked")
 	ErrUpstreamUnavailable = errors.New("upstream service unavailable")
+	ErrInvalidReference    = errors.New("referenced resource does not exist")
 )
 
 // ValidationError maps field names to human-readable validation failure reasons.

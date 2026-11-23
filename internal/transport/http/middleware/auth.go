@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -9,35 +11,45 @@ import (
 	"github.com/Soyaib10/farm-fusion/internal/transport/http/response"
 )
 
-// TokenVerifier verifies Bearer access tokens and returns the authenticated Actor.
-type TokenVerifier interface {
-	VerifyAccessToken(rawToken string) (domain.Actor, error)
+// Authenticator verifies Bearer access tokens against current account state and returns the Actor.
+type Authenticator interface {
+	Authenticate(ctx context.Context, rawToken string) (domain.Actor, error)
+}
+
+// BearerToken extracts the raw token from an "Authorization: Bearer <token>" header.
+func BearerToken(r *http.Request) (string, bool) {
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authHeader == "" {
+		return "", false
+	}
+	scheme, rawToken, found := strings.Cut(authHeader, " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+	rawToken = strings.TrimSpace(rawToken)
+	if rawToken == "" || len(rawToken) > 4096 {
+		return "", false
+	}
+	return rawToken, true
 }
 
 // RequireAuth enforces a valid Bearer JWT access token on incoming requests.
-func RequireAuth(verifier TokenVerifier, log *logger.Logger) func(http.Handler) http.Handler {
+func RequireAuth(auth Authenticator, log *logger.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
-			if authHeader == "" {
+			rawToken, ok := BearerToken(r)
+			if !ok {
 				response.UnauthorizedBearer(w, r, log, "invalid or missing authentication token")
 				return
 			}
 
-			scheme, rawToken, found := strings.Cut(authHeader, " ")
-			if !found || !strings.EqualFold(scheme, "Bearer") {
-				response.UnauthorizedBearer(w, r, log, "invalid or missing authentication token")
-				return
-			}
-			rawToken = strings.TrimSpace(rawToken)
-			if rawToken == "" || len(rawToken) > 4096 {
-				response.UnauthorizedBearer(w, r, log, "invalid or missing authentication token")
-				return
-			}
-
-			actor, err := verifier.VerifyAccessToken(rawToken)
+			actor, err := auth.Authenticate(r.Context(), rawToken)
 			if err != nil {
-				response.UnauthorizedBearer(w, r, log, "invalid or expired authentication token")
+				if errors.Is(err, domain.ErrUnauthorized) {
+					response.UnauthorizedBearer(w, r, log, "invalid or expired authentication token")
+					return
+				}
+				response.ServerError(w, r, log, err)
 				return
 			}
 

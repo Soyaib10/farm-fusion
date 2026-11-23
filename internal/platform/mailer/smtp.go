@@ -28,10 +28,13 @@ type Sender struct {
 	from       string
 	requireTLS bool
 	timeout    time.Duration
+
+	onQuitError func(error)
 }
 
-// NewSender constructs an SMTP Sender from configuration.
-func NewSender(cfg config.SMTPConfig) *Sender {
+// NewSender constructs an SMTP Sender from configuration. onQuitError, if non-nil, is called when
+// QUIT fails after the server already accepted the message.
+func NewSender(cfg config.SMTPConfig, onQuitError func(error)) *Sender {
 	from := cfg.From
 	if from == "" {
 		from = cfg.User
@@ -48,6 +51,8 @@ func NewSender(cfg config.SMTPConfig) *Sender {
 		from:       strings.TrimSpace(from),
 		requireTLS: cfg.RequireTLS,
 		timeout:    timeout,
+
+		onQuitError: onQuitError,
 	}
 }
 
@@ -156,7 +161,12 @@ func (s *Sender) send(ctx context.Context, from, to string, msg []byte) error {
 		return fmt.Errorf("smtp close data: %w", err)
 	}
 
-	return client.Quit()
+	// Close returned the server's 250 for DATA: the message is accepted. A failed QUIT does not
+	// change that, so it must not be reported as a failed (and therefore retried) delivery.
+	if err := client.Quit(); err != nil && s.onQuitError != nil {
+		s.onQuitError(err)
+	}
+	return nil
 }
 
 // SubjectForFarm generates a sanitized subject line immune to header injection.
@@ -228,7 +238,7 @@ var weatherEmailTemplate = template.Must(template.New("weather-email").Parse(`<!
       <ul>
         {{range .Ranges}}
           <li>
-            {{.Start.Format "Jan 02 15:04"}} to {{.End.Format "Jan 02 15:04"}}
+            {{.Start.Format "Jan 02 15:04 MST"}} to {{.End.Format "Jan 02 15:04 MST"}}
             ({{.DurationHours}} hours), values {{printf "%.1f" .MinValue}} to {{printf "%.1f" .MaxValue}}
           </li>
         {{end}}

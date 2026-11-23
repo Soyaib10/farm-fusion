@@ -15,7 +15,7 @@ import (
 type Dependencies struct {
 	Config         *config.Config
 	Logger         *logger.Logger
-	TokenVerifier  middleware.TokenVerifier
+	Authenticator  middleware.Authenticator
 	Health         *handler.HealthHandler
 	Auth           *handler.AuthHandler
 	User           *handler.UserHandler
@@ -53,17 +53,21 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Get("/readyz", deps.Health.Ready)
 	}
 
+	requireAuth := middleware.RequireAuth(deps.Authenticator, deps.Logger)
+
 	r.Route("/api/v1", func(r chi.Router) {
+		// Every API response carries tokens or personal data (emails, farm coordinates).
+		r.Use(middleware.NoStore)
+
 		r.Route("/auth", func(r chi.Router) {
-			r.Use(middleware.NoStore)
 			if deps.AuthLimiter != nil {
 				r.Use(deps.AuthLimiter.Middleware)
 			}
-			deps.Auth.RegisterRoutes(r)
+			deps.Auth.RegisterRoutes(r, requireAuth)
 		})
 
 		r.Group(func(r chi.Router) {
-			r.Use(middleware.RequireAuth(deps.TokenVerifier, deps.Logger))
+			r.Use(requireAuth)
 
 			r.Route("/users", deps.User.RegisterRoutes)
 			r.Route("/recommend", deps.Recommendation.RegisterRoutes)

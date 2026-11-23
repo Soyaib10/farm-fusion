@@ -56,7 +56,7 @@ func (s *stubFarmChecker) GetByID(_ context.Context, farmID, userID uuid.UUID) (
 		return nil, domain.ErrNotFound
 	}
 	if owner != userID {
-		return nil, domain.ErrForbidden
+		return nil, domain.ErrNotFound
 	}
 	return &domain.Farm{ID: farmID, UserID: owner}, nil
 }

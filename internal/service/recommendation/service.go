@@ -2,6 +2,7 @@ package recommendation
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/Soyaib10/farm-fusion/internal/domain"
@@ -14,6 +15,29 @@ type Predictor interface {
 	PredictFertilizer(ctx context.Context, query domain.FertilizerQuery) (*domain.FertilizerRecommendation, error)
 }
 
+type bound struct{ min, max float64 }
+
+// Input bounds must match ml_service/feature_bounds.json (enforced by TestBoundsMatchMLSpec).
+var (
+	cropBounds = map[string]bound{
+		"N":           {0, 140},
+		"P":           {5, 145},
+		"K":           {5, 205},
+		"temperature": {8, 44},
+		"humidity":    {14, 100},
+		"ph":          {3.5, 10},
+		"rainfall":    {20, 300},
+	}
+	fertilizerBounds = map[string]bound{
+		"temperature":   {25, 38},
+		"humidity":      {50, 72},
+		"soil_moisture": {25, 65},
+		"nitrogen":      {0, 42},
+		"potassium":     {0, 19},
+		"phosphorous":   {0, 42},
+	}
+)
+
 // Service validates agronomic feature inputs and orchestrates ML recommendations.
 type Service struct {
 	predictor Predictor
@@ -24,16 +48,25 @@ func NewService(predictor Predictor) *Service {
 	return &Service{predictor: predictor}
 }
 
+func checkBounds(v *validator.Validator, bounds map[string]bound, values map[string]float64) {
+	for field, val := range values {
+		b := bounds[field]
+		v.Check(validator.Between(val, b.min, b.max), field, fmt.Sprintf("must be between %g and %g", b.min, b.max))
+	}
+}
+
 // RecommendCrop validates soil/climate features and returns crop recommendations.
 func (s *Service) RecommendCrop(ctx context.Context, query domain.CropQuery) (*domain.CropRecommendation, error) {
 	v := validator.New()
-	v.Check(validator.Between(query.N, 0, 140), "N", "must be between 0 and 140")
-	v.Check(validator.Between(query.P, 5, 145), "P", "must be between 5 and 145")
-	v.Check(validator.Between(query.K, 5, 205), "K", "must be between 5 and 205")
-	v.Check(validator.Between(query.Temperature, 8, 44), "temperature", "must be between 8 and 44 °C")
-	v.Check(validator.Between(query.Humidity, 14, 100), "humidity", "must be between 14 and 100%")
-	v.Check(validator.Between(query.PH, 3.5, 10), "ph", "must be between 3.5 and 10")
-	v.Check(validator.Between(query.Rainfall, 20, 300), "rainfall", "must be between 20 and 300 mm")
+	checkBounds(v, cropBounds, map[string]float64{
+		"N":           query.N,
+		"P":           query.P,
+		"K":           query.K,
+		"temperature": query.Temperature,
+		"humidity":    query.Humidity,
+		"ph":          query.PH,
+		"rainfall":    query.Rainfall,
+	})
 
 	if err := v.Err(); err != nil {
 		return nil, err
@@ -47,16 +80,18 @@ func (s *Service) RecommendFertilizer(ctx context.Context, query domain.Fertiliz
 	query.CropType = strings.TrimSpace(query.CropType)
 
 	v := validator.New()
-	v.Check(validator.Between(query.Temperature, 25, 38), "temperature", "must be between 25 and 38 °C")
-	v.Check(validator.Between(query.Humidity, 50, 72), "humidity", "must be between 50 and 72%")
-	v.Check(validator.Between(query.SoilMoisture, 10, 65), "soil_moisture", "must be between 10 and 65")
+	checkBounds(v, fertilizerBounds, map[string]float64{
+		"temperature":   query.Temperature,
+		"humidity":      query.Humidity,
+		"soil_moisture": query.SoilMoisture,
+		"nitrogen":      query.Nitrogen,
+		"potassium":     query.Potassium,
+		"phosphorous":   query.Phosphorous,
+	})
 	v.Check(validator.In(query.SoilType, domain.AllowedSoilTypes...), "soil_type",
 		"must be one of: Sandy, Loamy, Black, Red, Clayey")
 	v.Check(validator.In(query.CropType, domain.AllowedCropTypes...), "crop_type",
 		"must be a supported crop type")
-	v.Check(validator.Between(query.Nitrogen, 0, 39), "nitrogen", "must be between 0 and 39")
-	v.Check(validator.Between(query.Potassium, 0, 19), "potassium", "must be between 0 and 19")
-	v.Check(validator.Between(query.Phosphorous, 0, 42), "phosphorous", "must be between 0 and 42")
 
 	if err := v.Err(); err != nil {
 		return nil, err

@@ -1,15 +1,24 @@
 package middleware
 
 import (
+	"errors"
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Soyaib10/farm-fusion/internal/platform/logger"
 	"github.com/Soyaib10/farm-fusion/internal/transport/http/response"
+)
+
+// maxBuckets bounds limiter memory. Once full, new clients share overflowKey's bucket until
+// the periodic cleanup frees space.
+const (
+	maxBuckets  = 100_000
+	overflowKey = "overflow"
 )
 
 type bucket struct {
@@ -19,10 +28,10 @@ type bucket struct {
 
 // RateLimiter implements an in-memory per-IP token-bucket rate limiter with automatic eviction.
 type RateLimiter struct {
-	rps        float64
-	burst      float64
-	trustProxy bool
-	log        *logger.Logger
+	rps            float64
+	burst          float64
+	trustedProxies []netip.Prefix
+	log            *logger.Logger
 
 	mu      sync.Mutex
 	clients map[string]*bucket
@@ -31,29 +40,30 @@ type RateLimiter struct {
 }
 
 // NewRateLimiter creates a RateLimiter and starts background cleanup of stale IP buckets.
-func NewRateLimiter(rps float64, burst int, trustProxy bool, log *logger.Logger) *RateLimiter {
-	if rps <= 0 {
-		rps = 10
+// Forwarding headers are honored only when the direct peer is inside trustedProxies.
+func NewRateLimiter(rps float64, burst int, trustedProxies []netip.Prefix, log *logger.Logger) (*RateLimiter, error) {
+	if rps <= 0 || math.IsNaN(rps) || math.IsInf(rps, 0) {
+		return nil, errors.New("rate limiter rps must be a positive finite number")
 	}
 	if burst < 1 {
-		burst = 20
+		return nil, errors.New("rate limiter burst must be at least 1")
 	}
 	rl := &RateLimiter{
-		rps:        rps,
-		burst:      float64(burst),
-		trustProxy: trustProxy,
-		log:        log,
-		clients:    make(map[string]*bucket),
-		done:       make(chan struct{}),
+		rps:            rps,
+		burst:          float64(burst),
+		trustedProxies: trustedProxies,
+		log:            log,
+		clients:        make(map[string]*bucket),
+		done:           make(chan struct{}),
 	}
 	go rl.cleanupLoop()
-	return rl
+	return rl, nil
 }
 
 // Middleware returns an http.Handler middleware enforcing the limiter's rate policy.
 func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := extractClientIP(r, rl.trustProxy)
+		ip := extractClientIP(r, rl.trustedProxies)
 		if !rl.allow(ip) {
 			response.RateLimitExceeded(w, r, rl.log)
 			return
@@ -62,15 +72,19 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-func (rl *RateLimiter) allow(ip string) bool {
+func (rl *RateLimiter) allow(key string) bool {
 	now := time.Now()
 
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	b, exists := rl.clients[ip]
+	b, exists := rl.clients[key]
+	if !exists && len(rl.clients) >= maxBuckets {
+		key = overflowKey
+		b, exists = rl.clients[key]
+	}
 	if !exists {
-		rl.clients[ip] = &bucket{
+		rl.clients[key] = &bucket{
 			tokens:   rl.burst - 1,
 			lastSeen: now,
 		}
@@ -115,24 +129,59 @@ func (rl *RateLimiter) Close() {
 	})
 }
 
-func extractClientIP(r *http.Request, trustProxy bool) string {
-	if trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first, _, _ := strings.Cut(xff, ",")
-			if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
-				return ip.String()
-			}
+// extractClientIP returns the direct peer address unless that peer is a trusted proxy. For a trusted
+// peer it walks X-Forwarded-For from the right, skipping trusted proxies, and returns the first
+// address a trusted proxy appended. Entries left of that are client-supplied and never used.
+func extractClientIP(r *http.Request, trustedProxies []netip.Prefix) string {
+	peer := remoteAddr(r)
+	if !peer.IsValid() {
+		return r.RemoteAddr
+	}
+	if !isTrusted(peer, trustedProxies) {
+		return peer.String()
+	}
+
+	hops := r.Header.Values("X-Forwarded-For")
+	var entries []string
+	for _, h := range hops {
+		entries = append(entries, strings.Split(h, ",")...)
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		addr, err := netip.ParseAddr(strings.TrimSpace(entries[i]))
+		if err != nil {
+			break
 		}
-		if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
-			if ip := net.ParseIP(xri); ip != nil {
-				return ip.String()
-			}
+		addr = addr.Unmap()
+		if !isTrusted(addr, trustedProxies) {
+			return addr.String()
 		}
 	}
 
+	if len(entries) == 0 {
+		if xri, err := netip.ParseAddr(strings.TrimSpace(r.Header.Get("X-Real-IP"))); err == nil {
+			return xri.Unmap().String()
+		}
+	}
+	return peer.String()
+}
+
+func remoteAddr(r *http.Request) netip.Addr {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
 	}
-	return host
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return addr.Unmap()
+}
+
+func isTrusted(addr netip.Addr, trusted []netip.Prefix) bool {
+	for _, p := range trusted {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }

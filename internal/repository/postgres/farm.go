@@ -73,14 +73,97 @@ func (r *FarmRepository) ListByUserID(ctx context.Context, userID uuid.UUID) ([]
 	return r.queryFarms(ctx, "list farms by user", query, userID)
 }
 
-// ListAll returns all farms grouped by location_key for batch forecast evaluation.
-func (r *FarmRepository) ListAll(ctx context.Context) ([]*domain.Farm, error) {
+// ListAlertTargets returns up to limit farms that have at least one enabled alert rule, ordered by
+// (location_key, id) after the cursor, each joined with its owner's email and enabled rules.
+func (r *FarmRepository) ListAlertTargets(ctx context.Context, after domain.AlertTargetCursor, limit int) ([]*domain.AlertTarget, error) {
 	const query = `
-		SELECT id, user_id, name, latitude, longitude, location_key, created_at, updated_at
-		FROM farms
-		ORDER BY location_key, created_at DESC
+		WITH page AS (
+			SELECT f.id
+			FROM farms f
+			WHERE (f.location_key, f.id) > ($1, $2)
+			  AND EXISTS (SELECT 1 FROM weather_alerts a WHERE a.farm_id = f.id AND a.is_enabled)
+			ORDER BY f.location_key, f.id
+			LIMIT $3
+		)
+		SELECT f.id, f.user_id, f.name, f.latitude, f.longitude, f.location_key, f.created_at, f.updated_at,
+		       u.email,
+		       a.id, a.metric, a.operator, a.value, a.is_enabled, a.created_at, a.updated_at
+		FROM page p
+		JOIN farms f ON f.id = p.id
+		JOIN users u ON u.id = f.user_id
+		JOIN weather_alerts a ON a.farm_id = f.id AND a.is_enabled
+		ORDER BY f.location_key, f.id, a.created_at
 	`
-	return r.queryFarms(ctx, "list all farms", query)
+	rows, err := r.db.Query(ctx, query, after.LocationKey, after.FarmID, limit)
+	if err != nil {
+		return nil, mapError("list alert targets", err)
+	}
+	defer rows.Close()
+
+	var targets []*domain.AlertTarget
+	for rows.Next() {
+		var (
+			f     domain.Farm
+			email string
+			w     domain.Weather
+		)
+		if err := rows.Scan(
+			&f.ID, &f.UserID, &f.Name, &f.Latitude, &f.Longitude, &f.LocationKey, &f.CreatedAt, &f.UpdatedAt,
+			&email,
+			&w.ID, &w.Metric, &w.Operator, &w.Value, &w.IsEnabled, &w.CreatedAt, &w.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("list alert targets scan: %w", err)
+		}
+		w.FarmID = f.ID
+		if n := len(targets); n == 0 || targets[n-1].Farm.ID != f.ID {
+			targets = append(targets, &domain.AlertTarget{Farm: f, OwnerEmail: email})
+		}
+		last := targets[len(targets)-1]
+		last.Alerts = append(last.Alerts, &w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list alert targets rows: %w", err)
+	}
+	return targets, nil
+}
+
+// ReconcileLocationKeys rewrites location_key with domain.NewLocationKey wherever the stored value
+// differs (for example rows backfilled by SQL rounding in migration 005). It returns the rows changed.
+func (r *FarmRepository) ReconcileLocationKeys(ctx context.Context) (int, error) {
+	rows, err := r.db.Query(ctx, `SELECT id, latitude, longitude, location_key FROM farms`)
+	if err != nil {
+		return 0, mapError("scan location keys", err)
+	}
+	type fix struct {
+		id  uuid.UUID
+		key string
+	}
+	var fixes []fix
+	for rows.Next() {
+		var (
+			id       uuid.UUID
+			lat, lon float64
+			stored   string
+		)
+		if err := rows.Scan(&id, &lat, &lon, &stored); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan location key: %w", err)
+		}
+		if want := domain.NewLocationKey(lat, lon); want != stored {
+			fixes = append(fixes, fix{id: id, key: want})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate location keys: %w", err)
+	}
+
+	for _, f := range fixes {
+		if _, err := r.db.Exec(ctx, `UPDATE farms SET location_key = $1 WHERE id = $2`, f.key, f.id); err != nil {
+			return 0, mapError("update location key", err)
+		}
+	}
+	return len(fixes), nil
 }
 
 func (r *FarmRepository) queryFarms(ctx context.Context, op, query string, args ...any) ([]*domain.Farm, error) {

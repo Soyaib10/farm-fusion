@@ -13,6 +13,8 @@ func TestStrongPassword(t *testing.T) {
 		want bool
 	}{
 		{"too short", "Ab1!", false},
+		{"multibyte but fewer than 8 characters", "密码密1", false},
+		{"8 multibyte characters", "密码密码密码密1", true},
 		{"exceeds bcrypt 72-byte limit", strings.Repeat("a", 72) + "1", false},
 		{"letters only", "abcdefghij", false},
 		{"digits only", "1234567890", false},

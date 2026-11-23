@@ -23,13 +23,27 @@ func (s *stubUserRepo) GetByID(_ context.Context, id uuid.UUID) (*domain.User, e
 	return &cp, nil
 }
 
-func (s *stubUserRepo) Update(_ context.Context, u *domain.User) error {
-	if _, ok := s.users[u.ID]; !ok {
-		return domain.ErrNotFound
+func (s *stubUserRepo) GetPasswordHash(_ context.Context, id uuid.UUID) (string, error) {
+	u, ok := s.users[id]
+	if !ok {
+		return "", domain.ErrNotFound
+	}
+	return u.PasswordHash, nil
+}
+
+func (s *stubUserRepo) UpdateProfile(_ context.Context, id uuid.UUID, name, email *string) (*domain.User, error) {
+	u, ok := s.users[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	if name != nil {
+		u.Name = *name
+	}
+	if email != nil {
+		u.Email = *email
 	}
 	cp := *u
-	s.users[u.ID] = &cp
-	return nil
+	return &cp, nil
 }
 
 func (s *stubUserRepo) Delete(_ context.Context, id uuid.UUID) error {
@@ -97,5 +111,41 @@ func TestUserServiceAuthorizationPreventsBOLA(t *testing.T) {
 	all, err := svc.List(ctx, adminActor)
 	if err != nil || len(all) != 2 {
 		t.Fatalf("List() as admin got len=%d err=%v, want 2 nil", len(all), err)
+	}
+}
+
+func TestUserServiceEmailChangeRequiresCurrentPassword(t *testing.T) {
+	ctx := context.Background()
+	aliceID := uuid.New()
+	alice := &domain.User{ID: aliceID, Name: "Alice", Email: "alice@example.com", Role: domain.RoleUser}
+	if err := alice.SetPassword("CorrectHorse1!"); err != nil {
+		t.Fatal(err)
+	}
+	repo := &stubUserRepo{users: map[uuid.UUID]*domain.User{aliceID: alice}}
+	svc := NewService(repo)
+	actor := domain.Actor{ID: aliceID, Role: domain.RoleUser}
+
+	newEmail := "attacker@example.com"
+	var valErr *domain.ValidationError
+
+	if _, err := svc.Update(ctx, actor, aliceID, UpdateInput{Email: &newEmail}); !errors.As(err, &valErr) {
+		t.Fatalf("email change without password got %v, want ValidationError", err)
+	}
+
+	wrong := "WrongPassword1!"
+	if _, err := svc.Update(ctx, actor, aliceID, UpdateInput{Email: &newEmail, CurrentPassword: &wrong}); !errors.As(err, &valErr) {
+		t.Fatalf("email change with wrong password got %v, want ValidationError", err)
+	}
+	if repo.users[aliceID].Email != "alice@example.com" {
+		t.Fatal("email must not change after a failed password check")
+	}
+
+	right := "CorrectHorse1!"
+	updated, err := svc.Update(ctx, actor, aliceID, UpdateInput{Email: &newEmail, CurrentPassword: &right})
+	if err != nil {
+		t.Fatalf("email change with correct password: %v", err)
+	}
+	if updated.Email != newEmail || updated.Name != "Alice" {
+		t.Fatalf("unexpected profile after email change: %+v", updated)
 	}
 }

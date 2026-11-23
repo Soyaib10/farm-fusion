@@ -8,6 +8,7 @@ import (
 	"github.com/Soyaib10/farm-fusion/internal/domain"
 	"github.com/Soyaib10/farm-fusion/internal/platform/logger"
 	authsvc "github.com/Soyaib10/farm-fusion/internal/service/auth"
+	"github.com/Soyaib10/farm-fusion/internal/transport/http/middleware"
 	"github.com/Soyaib10/farm-fusion/internal/transport/http/response"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -15,10 +16,11 @@ import (
 
 // AuthService defines authentication operations required by AuthHandler.
 type AuthService interface {
-	Register(ctx context.Context, input authsvc.RegisterInput) (*authsvc.AuthResult, error)
+	Register(ctx context.Context, input authsvc.RegisterInput) error
 	Login(ctx context.Context, input authsvc.LoginInput) (*authsvc.AuthResult, error)
 	Refresh(ctx context.Context, rawRefreshToken string) (*authsvc.AuthResult, error)
-	Logout(ctx context.Context, rawRefreshToken string) error
+	Logout(ctx context.Context, rawRefreshToken, rawAccessToken string) error
+	LogoutAll(ctx context.Context, actor domain.Actor) error
 }
 
 // AuthHandler handles HTTP requests for user authentication and session management.
@@ -32,12 +34,13 @@ func NewAuthHandler(svc AuthService, log *logger.Logger) *AuthHandler {
 	return &AuthHandler{svc: svc, log: log}
 }
 
-// RegisterRoutes mounts auth endpoints onto r.
-func (h *AuthHandler) RegisterRoutes(r chi.Router) {
+// RegisterRoutes mounts auth endpoints onto r. requireAuth guards the endpoints that need a session.
+func (h *AuthHandler) RegisterRoutes(r chi.Router, requireAuth func(http.Handler) http.Handler) {
 	r.Post("/register", h.Register)
 	r.Post("/login", h.Login)
 	r.Post("/refresh", h.Refresh)
 	r.Post("/logout", h.Logout)
+	r.With(requireAuth).Post("/logout-all", h.LogoutAll)
 }
 
 type registerRequest struct {
@@ -87,21 +90,20 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.svc.Register(r.Context(), authsvc.RegisterInput{
+	if err := h.svc.Register(r.Context(), authsvc.RegisterInput{
 		Name:     req.Name,
 		Email:    req.Email,
 		Password: req.Password,
-	})
-	if err != nil {
+	}); err != nil {
 		response.HandleDomainError(w, r, h.log, err)
 		return
 	}
 
+	// Same response whether or not the email was already registered.
 	data := map[string]any{
-		"message": "Registration successful. Please login.",
-		"user":    toAuthUserResponse(res.User),
+		"message": "Registration received. If the email address is not already registered, you can now log in.",
 	}
-	if err := response.WriteJSON(w, http.StatusCreated, response.Envelope{"data": data}, nil); err != nil {
+	if err := response.WriteJSON(w, http.StatusAccepted, response.Envelope{"data": data}, nil); err != nil {
 		response.ServerError(w, r, h.log, err)
 	}
 }
@@ -165,12 +167,31 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.svc.Logout(r.Context(), req.RefreshToken); err != nil {
+	accessToken, _ := middleware.BearerToken(r)
+	if err := h.svc.Logout(r.Context(), req.RefreshToken, accessToken); err != nil {
 		response.HandleDomainError(w, r, h.log, err)
 		return
 	}
 
 	if err := response.WriteJSON(w, http.StatusOK, response.Envelope{"message": "logged out successfully"}, nil); err != nil {
+		response.ServerError(w, r, h.log, err)
+	}
+}
+
+// LogoutAll handles POST /api/v1/auth/logout-all, revoking every session of the caller.
+func (h *AuthHandler) LogoutAll(w http.ResponseWriter, r *http.Request) {
+	actor, ok := middleware.ActorFromContext(r.Context())
+	if !ok {
+		response.UnauthorizedBearer(w, r, h.log, "invalid or missing authentication token")
+		return
+	}
+
+	if err := h.svc.LogoutAll(r.Context(), actor); err != nil {
+		response.HandleDomainError(w, r, h.log, err)
+		return
+	}
+
+	if err := response.WriteJSON(w, http.StatusOK, response.Envelope{"message": "all sessions logged out"}, nil); err != nil {
 		response.ServerError(w, r, h.log, err)
 	}
 }

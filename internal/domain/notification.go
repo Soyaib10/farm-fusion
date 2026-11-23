@@ -6,9 +6,23 @@ import (
 	"github.com/google/uuid"
 )
 
-// NotificationLog records an attempted weather alert email delivery.
+// AlertTarget is a farm with at least one enabled alert rule, joined with its owner's email.
+type AlertTarget struct {
+	Farm       Farm
+	OwnerEmail string
+	Alerts     []*Weather
+}
+
+// AlertTargetCursor is the keyset position for paging alert targets.
+type AlertTargetCursor struct {
+	LocationKey string
+	FarmID      uuid.UUID
+}
+
+// NotificationLog records a weather alert email delivery. NotificationID is the idempotency key.
 type NotificationLog struct {
 	ID               uuid.UUID `json:"id"`
+	NotificationID   uuid.UUID `json:"notification_id"`
 	FarmID           uuid.UUID `json:"farm_id"`
 	UserID           uuid.UUID `json:"user_id"`
 	NotificationType string    `json:"notification_type"` // "scheduled" or "immediate"

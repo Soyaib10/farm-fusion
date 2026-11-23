@@ -46,8 +46,9 @@ func (h *UserHandler) RegisterRoutes(r chi.Router) {
 }
 
 type updateUserRequest struct {
-	Name  *string `json:"name,omitempty"`
-	Email *string `json:"email,omitempty"`
+	Name            *string `json:"name,omitempty"`
+	Email           *string `json:"email,omitempty"`
+	CurrentPassword *string `json:"current_password,omitempty"`
 }
 
 // GetMe handles GET /api/v1/users/me.
@@ -138,8 +139,9 @@ func (h *UserHandler) updateTarget(w http.ResponseWriter, r *http.Request, actor
 	}
 
 	updated, err := h.svc.Update(r.Context(), actor, targetID, usersvc.UpdateInput{
-		Name:  req.Name,
-		Email: req.Email,
+		Name:            req.Name,
+		Email:           req.Email,
+		CurrentPassword: req.CurrentPassword,
 	})
 	if err != nil {
 		response.HandleDomainError(w, r, h.log, err)

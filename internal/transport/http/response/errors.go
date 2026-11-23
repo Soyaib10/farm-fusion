@@ -74,6 +74,8 @@ func HandleDomainError(w http.ResponseWriter, r *http.Request, log *logger.Logge
 		NotFound(w, r, log)
 	case errors.Is(err, domain.ErrAlreadyExists):
 		Error(w, r, log, http.StatusConflict, "a resource with the provided details already exists")
+	case errors.Is(err, domain.ErrInvalidReference):
+		Error(w, r, log, http.StatusUnprocessableEntity, "the request refers to a resource that does not exist")
 	case errors.Is(err, domain.ErrUpstreamUnavailable):
 		logRequestError(r, log, err)
 		Error(w, r, log, http.StatusBadGateway, "recommendation engine is temporarily unavailable")

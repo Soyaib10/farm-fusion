@@ -1,0 +1,52 @@
+{
+  "sklearn_version": "1.9.1",
+  "models": {
+    "crop": {
+      "rows": 2200,
+      "cv_folds": 5,
+      "accuracy_mean": 0.9955,
+      "accuracy_std": 0.0032,
+      "min_accuracy": 0.97,
+      "class_support": {
+        "apple": 100,
+        "banana": 100,
+        "blackgram": 100,
+        "chickpea": 100,
+        "coconut": 100,
+        "coffee": 100,
+        "cotton": 100,
+        "grapes": 100,
+        "jute": 100,
+        "kidneybeans": 100,
+        "lentil": 100,
+        "maize": 100,
+        "mango": 100,
+        "mothbeans": 100,
+        "mungbean": 100,
+        "muskmelon": 100,
+        "orange": 100,
+        "papaya": 100,
+        "pigeonpeas": 100,
+        "pomegranate": 100,
+        "rice": 100,
+        "watermelon": 100
+      }
+    },
+    "fertilizer": {
+      "rows": 99,
+      "cv_folds": 5,
+      "accuracy_mean": 0.98,
+      "accuracy_std": 0.0245,
+      "min_accuracy": 0.9,
+      "class_support": {
+        "10-26-26": 7,
+        "14-35-14": 14,
+        "17-17-17": 7,
+        "20-20": 14,
+        "28-28": 17,
+        "DAP": 18,
+        "Urea": 22
+      }
+    }
+  }
+}

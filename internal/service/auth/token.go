@@ -12,8 +12,19 @@ import (
 
 // AccessClaims defines the custom JWT claims embedded in access tokens.
 type AccessClaims struct {
-	Role string `json:"role"`
+	Role    string `json:"role"`
+	Version int    `json:"ver"`
 	jwt.RegisteredClaims
+}
+
+// VerifiedToken holds the claims of an access token whose signature and registered claims are valid.
+// It says nothing about whether the account still exists; see Service.Authenticate for that.
+type VerifiedToken struct {
+	UserID    uuid.UUID
+	Role      domain.Role
+	Version   int
+	TokenID   string
+	ExpiresAt time.Time
 }
 
 // TokenManager issues and strictly validates HS256 JWT access tokens.
@@ -43,7 +54,8 @@ func (m *TokenManager) IssueAccessToken(u *domain.User) (string, error) {
 	}
 
 	claims := AccessClaims{
-		Role: string(role),
+		Role:    string(role),
+		Version: u.TokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        uuid.NewString(),
 			Subject:   u.ID.String(),
@@ -63,9 +75,8 @@ func (m *TokenManager) IssueAccessToken(u *domain.User) (string, error) {
 	return signed, nil
 }
 
-// VerifyAccessToken validates signature algorithm, issuer, audience, and expiration,
-// returning the authenticated domain.Actor.
-func (m *TokenManager) VerifyAccessToken(rawToken string) (domain.Actor, error) {
+// VerifyAccessToken validates signature algorithm, issuer, audience, and expiration.
+func (m *TokenManager) VerifyAccessToken(rawToken string) (VerifiedToken, error) {
 	var claims AccessClaims
 
 	token, err := jwt.ParseWithClaims(
@@ -81,12 +92,15 @@ func (m *TokenManager) VerifyAccessToken(rawToken string) (domain.Actor, error) 
 		jwt.WithIssuedAt(),
 	)
 	if err != nil || !token.Valid {
-		return domain.Actor{}, domain.ErrUnauthorized
+		return VerifiedToken{}, domain.ErrUnauthorized
 	}
 
 	userID, err := uuid.Parse(claims.Subject)
 	if err != nil || userID == uuid.Nil {
-		return domain.Actor{}, domain.ErrUnauthorized
+		return VerifiedToken{}, domain.ErrUnauthorized
+	}
+	if claims.ID == "" || claims.ExpiresAt == nil {
+		return VerifiedToken{}, domain.ErrUnauthorized
 	}
 
 	role := domain.Role(claims.Role)
@@ -94,11 +108,14 @@ func (m *TokenManager) VerifyAccessToken(rawToken string) (domain.Actor, error) 
 		role = domain.RoleUser
 	}
 	if !role.IsValid() {
-		return domain.Actor{}, domain.ErrUnauthorized
+		return VerifiedToken{}, domain.ErrUnauthorized
 	}
 
-	return domain.Actor{
-		ID:   userID,
-		Role: role,
+	return VerifiedToken{
+		UserID:    userID,
+		Role:      role,
+		Version:   claims.Version,
+		TokenID:   claims.ID,
+		ExpiresAt: claims.ExpiresAt.Time,
 	}, nil
 }

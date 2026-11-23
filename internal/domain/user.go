@@ -27,6 +27,15 @@ func (r Role) IsValid() bool {
 type Actor struct {
 	ID   uuid.UUID
 	Role Role
+	// TokenID is the jti of the access token that authenticated this actor.
+	TokenID string
+}
+
+// SessionState is the server-side account state an access token is checked against on every request.
+type SessionState struct {
+	Role         Role
+	TokenVersion int
+	TokenRevoked bool
 }
 
 // IsAdmin reports whether the actor holds administrative privileges.
@@ -59,6 +68,15 @@ type User struct {
 	Role         Role      `json:"role"`
 	PasswordHash string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
+
+	TokenVersion     int        `json:"-"`
+	FailedLoginCount int        `json:"-"`
+	LockedUntil      *time.Time `json:"-"`
+}
+
+// IsLocked reports whether the account is temporarily locked after repeated failed logins.
+func (u *User) IsLocked(now time.Time) bool {
+	return u.LockedUntil != nil && now.Before(*u.LockedUntil)
 }
 
 // SetPassword hashes plaintext using bcrypt and stores the resulting hash on u.

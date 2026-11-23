@@ -2,6 +2,7 @@ package weather
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -133,6 +134,10 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*domain.Weathe
 	}
 
 	if err := s.repo.Create(ctx, rule); err != nil {
+		if errors.Is(err, domain.ErrInvalidReference) {
+			// The farm was deleted after the ownership check: report it as missing.
+			return nil, domain.ErrNotFound
+		}
 		return nil, fmt.Errorf("create weather alert: %w", err)
 	}
 	return rule, nil

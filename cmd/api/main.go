@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"syscall"
@@ -42,6 +43,7 @@ func main() {
 	// Repositories
 	userRepo := postgres.NewUserRepository(db)
 	tokenRepo := postgres.NewRefreshTokenRepository(db)
+	sessionRepo := postgres.NewSessionRepository(db)
 	farmRepo := postgres.NewFarmRepository(db)
 	weatherRepo := postgres.NewWeatherRepository(db)
 
@@ -51,23 +53,29 @@ func main() {
 
 	// Services
 	tokenManager := authsvc.NewTokenManager(cfg.Auth)
-	authService := authsvc.NewService(userRepo, tokenRepo, tokenManager, cfg.Auth)
+	authService := authsvc.NewService(userRepo, tokenRepo, sessionRepo, tokenManager, cfg.Auth)
 	userService := usersvc.NewService(userRepo)
 	farmService := farmsvc.NewService(farmRepo)
 	weatherService := weathersvc.NewService(weatherRepo, farmService)
 	recService := recsvc.NewService(mlClient)
 
 	// Rate limiters
+	var trustedProxies []netip.Prefix
+	if cfg.Server.TrustProxy {
+		trustedProxies = cfg.Server.TrustedProxies
+	}
 	var globalLimiter, authLimiter *middleware.RateLimiter
 	if cfg.RateLimit.Enabled {
-		globalLimiter = middleware.NewRateLimiter(
-			cfg.RateLimit.RPS, cfg.RateLimit.Burst, cfg.Server.TrustProxy, log,
-		)
+		globalLimiter, err = middleware.NewRateLimiter(cfg.RateLimit.RPS, cfg.RateLimit.Burst, trustedProxies, log)
+		if err != nil {
+			log.Fatal(err, map[string]string{"operation": "create_rate_limiter"})
+		}
 		defer globalLimiter.Close()
 
-		authLimiter = middleware.NewRateLimiter(
-			cfg.RateLimit.AuthRPS, cfg.RateLimit.AuthBurst, cfg.Server.TrustProxy, log,
-		)
+		authLimiter, err = middleware.NewRateLimiter(cfg.RateLimit.AuthRPS, cfg.RateLimit.AuthBurst, trustedProxies, log)
+		if err != nil {
+			log.Fatal(err, map[string]string{"operation": "create_auth_rate_limiter"})
+		}
 		defer authLimiter.Close()
 	}
 
@@ -75,7 +83,7 @@ func main() {
 	router := httpapi.NewRouter(httpapi.Dependencies{
 		Config:         cfg,
 		Logger:         log,
-		TokenVerifier:  tokenManager,
+		Authenticator:  authService,
 		Health:         handler.NewHealthHandler(db, log),
 		Auth:           handler.NewAuthHandler(authService, log),
 		User:           handler.NewUserHandler(userService, log),

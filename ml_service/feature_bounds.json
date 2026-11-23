@@ -1,0 +1,20 @@
+{
+  "_comment": "Inclusive input bounds for the ML endpoints, taken from the training CSVs. The FastAPI models load this file; the Go recommendation service has a test that fails if its limits drift from it.",
+  "crop": {
+    "N": [0, 140],
+    "P": [5, 145],
+    "K": [5, 205],
+    "temperature": [8, 44],
+    "humidity": [14, 100],
+    "ph": [3.5, 10],
+    "rainfall": [20, 300]
+  },
+  "fertilizer": {
+    "temperature": [25, 38],
+    "humidity": [50, 72],
+    "soil_moisture": [25, 65],
+    "nitrogen": [0, 42],
+    "potassium": [0, 19],
+    "phosphorous": [0, 42]
+  }
+}

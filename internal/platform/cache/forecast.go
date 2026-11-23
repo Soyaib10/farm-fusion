@@ -21,21 +21,12 @@ type ForecastCache struct {
 
 // NewForecastCache connects to Redis, verifies connectivity, and returns a ForecastCache.
 func NewForecastCache(cfg config.RedisConfig, ttl time.Duration, log *logger.Logger) (*ForecastCache, error) {
-	opts := &redis.Options{
-		Addr:         cfg.Addr,
-		Password:     cfg.Password,
-		DB:           cfg.DB,
-		DialTimeout:  5 * time.Second,
-		ReadTimeout:  3 * time.Second,
-		WriteTimeout: 3 * time.Second,
+	if ttl <= 0 {
+		return nil, errors.New("forecast cache TTL must be positive")
 	}
-
-	if cfg.URL != "" {
-		parsed, err := redis.ParseURL(cfg.URL)
-		if err != nil {
-			return nil, errors.New("invalid Redis connection URL")
-		}
-		opts = parsed
+	opts, err := redisOptions(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	client := redis.NewClient(opts)
@@ -55,9 +46,44 @@ func NewForecastCache(cfg config.RedisConfig, ttl time.Duration, log *logger.Log
 	}, nil
 }
 
-// Get fetches a cached forecast by locationKey, returning domain.ErrNotFound on cache miss.
+// redisOptions builds client options. When REDIS_URL is set it wins, but a password or DB given
+// separately fills in what the URL omits, and the default timeouts still apply.
+func redisOptions(cfg config.RedisConfig) (*redis.Options, error) {
+	opts := &redis.Options{
+		Addr:     cfg.Addr,
+		Password: cfg.Password,
+		DB:       cfg.DB,
+	}
+	if cfg.URL != "" {
+		parsed, err := redis.ParseURL(cfg.URL)
+		if err != nil {
+			return nil, errors.New("invalid Redis connection URL")
+		}
+		if parsed.Password == "" {
+			parsed.Password = cfg.Password
+		}
+		if parsed.DB == 0 {
+			parsed.DB = cfg.DB
+		}
+		opts = parsed
+	}
+	if opts.DialTimeout == 0 {
+		opts.DialTimeout = 5 * time.Second
+	}
+	if opts.ReadTimeout == 0 {
+		opts.ReadTimeout = 3 * time.Second
+	}
+	if opts.WriteTimeout == 0 {
+		opts.WriteTimeout = 3 * time.Second
+	}
+	return opts, nil
+}
+
+// Get fetches a cached forecast by locationKey, returning domain.ErrNotFound on a miss. Entries that
+// are empty or older than the TTL are deleted and reported as a miss so the caller refetches.
 func (c *ForecastCache) Get(ctx context.Context, locationKey string) (*domain.WeatherForecast, error) {
-	data, err := c.client.Get(ctx, forecastKey(locationKey)).Bytes()
+	key := forecastKey(locationKey)
+	data, err := c.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return nil, domain.ErrNotFound
@@ -66,14 +92,22 @@ func (c *ForecastCache) Get(ctx context.Context, locationKey string) (*domain.We
 	}
 
 	var forecast domain.WeatherForecast
-	if err := json.Unmarshal(data, &forecast); err != nil {
-		return nil, fmt.Errorf("unmarshal forecast: %w", err)
+	if err := json.Unmarshal(data, &forecast); err != nil || !c.usable(&forecast) {
+		_ = c.client.Del(ctx, key).Err()
+		return nil, domain.ErrNotFound
 	}
 	return &forecast, nil
 }
 
+func (c *ForecastCache) usable(f *domain.WeatherForecast) bool {
+	return len(f.DataPoints) > 0 && !f.FetchedAt.IsZero() && time.Since(f.FetchedAt) <= c.ttl
+}
+
 // Set caches a weather forecast under its LocationKey for the configured TTL.
 func (c *ForecastCache) Set(ctx context.Context, forecast *domain.WeatherForecast) error {
+	if len(forecast.DataPoints) == 0 {
+		return errors.New("refusing to cache a forecast with no data points")
+	}
 	data, err := json.Marshal(forecast)
 	if err != nil {
 		return fmt.Errorf("marshal forecast: %w", err)
